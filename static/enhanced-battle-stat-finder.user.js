@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.5
-// @description  Honor-bar prediction badges with BSP/FF visible estimate bridge, FF base intel, cached intel, N/A fallback, and automatic learning.
+// @version      1.3.6
+// @description  Honor-bar prediction badges with stronger fight result detection, backup save button, FF/BSP bridge, cached intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -91,10 +91,15 @@
 
 
 
+
+#ebsfFightSaveMini{position:fixed;left:14px;top:118px;z-index:2147483647;background:#111827;color:#fde68a;border:1px solid #facc15;border-radius:10px;padding:8px 10px;font:900 12px Arial,sans-serif;box-shadow:0 2px 10px #000b;display:none}
+#ebsfFightSaveMini button{margin-left:6px;background:#1f2937;color:#fde68a;border:1px solid #facc15;border-radius:7px;padding:4px 7px;font-weight:900}
+
     @media(max-width:760px){#ebsfPanel{width:calc(100vw - 6px);height:calc(100vh - 6px);border-radius:10px}.grid,.row,.statsBox{grid-template-columns:1fr}.target{grid-template-columns:1fr}.acts{justify-content:flex-start}}
   `);
 
   boot();
+  bsfInstallNetworkWatch?.();
   setTimeout(()=>paintHonorBadgesOnly(), 2500);
   setupStrongAttackRemembering();
   watchAttackPage();
@@ -189,6 +194,7 @@
       <div class="topScanBar">
         <button id="scanTop" class="btn">🔎 Scan Enemy Targets Using My Stats</button>
         <input id="enemyFaction" class="inp" placeholder="Enemy faction ID optional - leave blank to auto-detect active war" value="${esc(app.enemyFaction)}" style="margin-top:8px">
+        ${(()=>{const d=bsfDebugGet?.()||{}; return `<div class="infoBox"><h3>🧪 Last fight debug</h3><p class="note">Target remembered: ${esc(d.target_remembered_id||'no')}</p><p class="note">Result detected: ${esc(String(d.last_result_scan_ended||'no'))} / ${esc(d.last_result_scan_side||'unknown')}</p><p class="note">Saved target: ${esc(d.last_fight_saved_target||'no')}</p><p class="note">Saved result: ${esc(d.last_fight_saved_result||'none')}</p></div>`})()}
         <div class="msg ${app.msg?'show':''}">${esc(app.msg)}</div>
         <div class="note" style="margin-top:8px">${app.user ? `Logged in as <b>${esc(app.user.name)}</b> • Stats: <b>${fmt(app.total)}</b>` : 'Login in Settings once; the app auto-starts after login.'}</div>
       </div>
@@ -362,6 +368,7 @@
         <button id="login" class="btn" style="margin-top:10px">Login / Save All</button>
 
         ${app.user?`<div class="statsBox"><div class="statMini">Total<br><b>${fmt(app.total||bs.total)}</b></div><div class="statMini">Str<br><b>${fmt(bs.strength)}</b></div><div class="statMini">Def<br><b>${fmt(bs.defense)}</b></div><div class="statMini">Spd<br><b>${fmt(bs.speed)}</b></div><div class="statMini">Dex<br><b>${fmt(bs.dexterity)}</b></div></div>`:''}
+        ${(()=>{const d=bsfDebugGet?.()||{}; return `<div class="infoBox"><h3>🧪 Last fight debug</h3><p class="note">Target remembered: ${esc(d.target_remembered_id||'no')}</p><p class="note">Result detected: ${esc(String(d.last_result_scan_ended||'no'))} / ${esc(d.last_result_scan_side||'unknown')}</p><p class="note">Saved target: ${esc(d.last_fight_saved_target||'no')}</p><p class="note">Saved result: ${esc(d.last_fight_saved_result||'none')}</p></div>`})()}
         <div class="msg ${app.msg?'show':''}">${esc(app.msg)}</div>
       </div>
     </div>`;
@@ -383,6 +390,162 @@
     if(b && b.id && Date.now() - (b.ts || 0) < 1000*60*45) return b;
     return null;
   }
+
+
+  function bsfDebugSet(key, value){
+    try{
+      const row = safeJson(GM_getValue('ebsf_debug_status', '{}')) || {};
+      row[key] = value;
+      row.updated = new Date().toISOString();
+      GM_setValue('ebsf_debug_status', JSON.stringify(row));
+    }catch(e){}
+  }
+
+  function bsfDebugGet(){
+    return safeJson(GM_getValue('ebsf_debug_status', '{}')) || {};
+  }
+
+  function ensureFightSaveMini(){
+    let box = document.getElementById('ebsfFightSaveMini');
+    if(box) return box;
+    box = document.createElement('div');
+    box.id = 'ebsfFightSaveMini';
+    box.innerHTML = `⚔️ Save last fight
+      <button data-r="easy_win">Easy Win</button>
+      <button data-r="close_win">Close Win</button>
+      <button data-r="generic_loss">Loss</button>`;
+    document.body.appendChild(box);
+    box.addEventListener('click', (e)=>{
+      const btn = e.target.closest('button[data-r]');
+      if(!btn) return;
+      const pending = readRememberedAttackTarget?.();
+      if(!pending || !pending.id){
+        toast('⚔️ No remembered target to save.');
+        return;
+      }
+      const result = btn.dataset.r;
+      bsfDebugSet('manual_backup_result', result);
+      autoSaveFightResult(pending.id, pending.name || 'Enemy', result, true, {quality:50, resultSide:result.includes('loss')?'loss':'win', source:'backup_button'});
+      box.style.display = 'none';
+    });
+    return box;
+  }
+
+  function showFightSaveMini(){
+    const pending = readRememberedAttackTarget?.();
+    if(!pending || !pending.id) return;
+    const box = ensureFightSaveMini();
+    box.style.display = 'block';
+    bsfDebugSet('backup_button_visible', true);
+    setTimeout(()=>{ if(box) box.style.display='none'; }, 1000*60*6);
+  }
+
+  function bsfResultFromText(raw){
+    const bodyText = String(raw || '').replace(/\s+/g, ' ');
+    const text = bodyText.toLowerCase();
+    const winStrong = ['you won','you have won','you mugged','you have mugged','you hospitalized','you hospitalised','you left','you defeated','you beat','victory','respect gained','experience gained','you gained','you receive','you received'];
+    const lossStrong = ['you lost','you have lost','you were defeated','defeated by','you were hospitalized','you were hospitalised','you ran away','you failed','stalemate'];
+    const won = winStrong.some(w => text.includes(w));
+    const lost = lossStrong.some(w => text.includes(w));
+    if(won) return {ended:true, side:'win', result:'generic_win', text:bodyText};
+    if(lost) return {ended:true, side:'loss', result:'generic_loss', text:bodyText};
+    if(/leave them|mug them|hospitalize|hospitalise|claim rewards|continue|fight over|result|respect gained|experience gained|you gained/i.test(bodyText)){
+      return {ended:true, side:'win', result:'generic_win', text:bodyText};
+    }
+    return {ended:false, side:'unknown', result:'unknown', text:bodyText};
+  }
+
+  function bsfTrySaveFromResultText(raw, source){
+    const pending = readRememberedAttackTarget?.();
+    if(!pending || !pending.id) return false;
+    const parsed = bsfResultFromText(raw);
+    bsfDebugSet('last_result_scan_source', source || 'dom');
+    bsfDebugSet('last_result_scan_ended', parsed.ended);
+    bsfDebugSet('last_result_scan_side', parsed.side);
+    if(!parsed.ended) return false;
+
+    const key = `${pending.id}:${Math.floor((pending.ts || Date.now())/1000)}:${parsed.side}:${source || 'dom'}`;
+    if(GM_getValue(S.lastPrompted, '') === key) return true;
+    GM_setValue(S.lastPrompted, key);
+
+    const detail = extractFightDetails?.(String(raw || '').toLowerCase()) || {};
+    detail.resultSide = parsed.side;
+    detail.source = source || 'dom_result';
+    const finalResult = classifyFightResult ? classifyFightResult(String(raw || '').toLowerCase(), parsed.side === 'win', detail) : parsed.result;
+
+    bsfDebugSet('last_fight_saved_target', pending.id);
+    bsfDebugSet('last_fight_saved_result', finalResult);
+    autoSaveFightResult(pending.id, pending.name || getPageProfileName?.() || 'Enemy', finalResult, false, detail);
+    return true;
+  }
+
+  function bsfInstallNetworkWatch(){
+    if(window.__ebsfNetworkWatchInstalled) return;
+    window.__ebsfNetworkWatchInstalled = true;
+
+    const oldFetch = window.fetch;
+    if(oldFetch){
+      window.fetch = async function(...args){
+        const resp = await oldFetch.apply(this, args);
+        try{
+          const clone = resp.clone();
+          clone.text().then(txt=>{
+            if(/attack|fight|respect|hospital|mug|you won|you lost/i.test(txt)){
+              bsfTrySaveFromResultText(txt, 'fetch');
+            }
+          }).catch(()=>{});
+        }catch(e){}
+        return resp;
+      };
+    }
+
+    const OldXHR = window.XMLHttpRequest;
+    if(OldXHR && !window.__ebsfXhrPatched){
+      window.__ebsfXhrPatched = true;
+      const oldOpen = OldXHR.prototype.open;
+      const oldSend = OldXHR.prototype.send;
+      OldXHR.prototype.open = function(method, url){
+        this.__ebsfUrl = url;
+        return oldOpen.apply(this, arguments);
+      };
+      OldXHR.prototype.send = function(){
+        this.addEventListener('load', function(){
+          try{
+            const txt = this.responseText || '';
+            if(/attack|fight|respect|hospital|mug|you won|you lost/i.test(txt)){
+              bsfTrySaveFromResultText(txt, 'xhr');
+            }
+          }catch(e){}
+        });
+        return oldSend.apply(this, arguments);
+      };
+    }
+  }
+
+  function bsfStartDeepFightWatch(){
+    bsfInstallNetworkWatch();
+    if(window.__ebsfDeepFightInterval) clearInterval(window.__ebsfDeepFightInterval);
+    window.__ebsfDeepFightInterval = setInterval(()=>bsfTrySaveFromResultText(document.body?.innerText || '', 'dom_interval'), 900);
+    setTimeout(()=>{ if(window.__ebsfDeepFightInterval) clearInterval(window.__ebsfDeepFightInterval); window.__ebsfDeepFightInterval=null; }, 1000*60*7);
+
+    try{
+      if(window.__ebsfDeepFightObserver) window.__ebsfDeepFightObserver.disconnect();
+      window.__ebsfDeepFightObserver = new MutationObserver(()=>bsfTrySaveFromResultText(document.body?.innerText || '', 'mutation'));
+      window.__ebsfDeepFightObserver.observe(document.body, {childList:true, subtree:true, characterData:true});
+      setTimeout(()=>window.__ebsfDeepFightObserver?.disconnect(), 1000*60*7);
+    }catch(e){}
+
+    setTimeout(()=>{
+      const pending = readRememberedAttackTarget?.();
+      if(pending && pending.id && Date.now() - (pending.ts || 0) < 1000*60*8){
+        const dbg = bsfDebugGet();
+        if(!dbg.last_fight_saved_target || Number(dbg.last_fight_saved_target) !== Number(pending.id)){
+          showFightSaveMini();
+        }
+      }
+    }, 18000);
+  }
+
 
   function setupStrongAttackRemembering(){
     document.addEventListener('click', (e)=>{
@@ -413,8 +576,11 @@
 
       rememberAttackTarget(id, findNearbyName(el) || getPageProfileName() || 'Enemy');
       GM_setValue('ebsf_attack_click_ts', Date.now());
+      bsfDebugSet?.('target_remembered_id', id);
+      bsfStartDeepFightWatch?.();
       toast?.('⚔️ Target remembered for learning.');
       startUniversalFightWatcher();
+      bsfStartDeepFightWatch?.();
     }, true);
 
     if(location.href.includes('profiles.php') || /Profile/i.test(document.title || '')){
@@ -428,8 +594,11 @@
           if(/attack|fight|loader\.php\?sid=attack|user2ID|target/i.test(blob)){
             rememberAttackTarget(pid, getPageProfileName() || 'Enemy');
             GM_setValue('ebsf_attack_click_ts', Date.now());
+      bsfDebugSet?.('target_remembered_id', id);
+      bsfStartDeepFightWatch?.();
             toast?.('⚔️ Target remembered for learning.');
             startUniversalFightWatcher();
+      bsfStartDeepFightWatch?.();
           }
         }, true);
       }
@@ -1350,6 +1519,7 @@
     const clicked = Number(GM_getValue('ebsf_attack_click_ts', 0) || 0);
     if(clicked && Date.now() - clicked < 1000*60*15){
       startUniversalFightWatcher();
+      bsfStartDeepFightWatch?.();
     }
   }
 
@@ -1364,9 +1534,11 @@
     }
 
     startUniversalFightWatcher();
+      bsfStartDeepFightWatch?.();
   }
 
   function detectFightEndAndAutoSave(){
+    if(bsfTrySaveFromResultText?.(document.body?.innerText || '', 'detectFightEnd')) return;
     let saved = readRememberedAttackTarget?.();
     if(!saved || !saved.id){
       const found = detectTargetFromPage?.();
