@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.2.5
-// @description  Smooth war/profile/faction prediction badges with one honor-bar badge, N/A fallback, cached intel, and automatic learning.
+// @version      1.2.6
+// @description  Smooth war/profile/faction prediction badges with stronger attack tracking, immediate learning refresh, cached intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -29,6 +29,7 @@
     tornstats: 'ebsf_tornstats_key',
     yata: 'ebsf_yata_key',
     lastAttack: 'ebsf_last_attack_id',
+    lastTarget: 'ebsf_last_target_id',
     lastPrompted: 'ebsf_last_auto_learned_attack',
     lastScan: 'ebsf_last_scan_payload',
     intelCache: 'ebsf_intel_cache',
@@ -84,6 +85,7 @@
   `);
 
   boot();
+  setupStrongAttackRemembering();
   watchAttackPage();
   setTimeout(()=>{startSmoothBadgeSystem(); paintProfilePageBadge();}, 1600);
   watchGlobalAttackClicks();
@@ -346,6 +348,71 @@
     </div>`;
     q('#login').onclick=login;
   }
+
+  function rememberAttackTarget(id, name){
+    id = Number(id);
+    if(!id || (app.user && String(id) === String(app.user.user_id))) return;
+    const row = {id, name: name || 'Enemy', ts: Date.now(), url: location.href};
+    GM_setValue(S.lastAttack, JSON.stringify(row));
+    GM_setValue(S.lastTarget, JSON.stringify(row));
+  }
+
+  function readRememberedAttackTarget(){
+    const a = safeJson(GM_getValue(S.lastAttack, null));
+    if(a && a.id && Date.now() - (a.ts || 0) < 1000*60*25) return a;
+    const b = safeJson(GM_getValue(S.lastTarget, null));
+    if(b && b.id && Date.now() - (b.ts || 0) < 1000*60*45) return b;
+    return null;
+  }
+
+  function setupStrongAttackRemembering(){
+    document.addEventListener('click', (e)=>{
+      const el = e.target?.closest?.('a,button,[onclick],[data-user],[data-id],[data-xid]');
+      if(!el) return;
+
+      const blob = [
+        el.href,
+        el.getAttribute('href'),
+        el.getAttribute('onclick'),
+        el.getAttribute('data-user'),
+        el.getAttribute('data-id'),
+        el.getAttribute('data-xid'),
+        el.outerHTML
+      ].filter(Boolean).join(' ');
+
+      const id = extractTargetIdFromText(blob);
+      if(!id) return;
+
+      const looksAttack = /attack|user2ID|sid=attack|target/i.test(blob);
+      if(!looksAttack && !location.href.includes('profiles.php')) return;
+
+      rememberAttackTarget(id, findNearbyName(el) || getPageProfileName() || 'Enemy');
+    }, true);
+
+    if(location.href.includes('profiles.php')){
+      const pid = getProfilePageId?.() || extractTargetIdFromText(location.href);
+      if(pid){
+        document.addEventListener('click', (e)=>{
+          const el = e.target?.closest?.('a,button,div');
+          if(!el) return;
+          const text = (el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || el.className || '').toString();
+          const blob = [text, el.outerHTML || ''].join(' ');
+          if(/attack|loader\.php\?sid=attack|user2ID|target/i.test(blob)){
+            rememberAttackTarget(pid, getPageProfileName() || 'Enemy');
+          }
+        }, true);
+      }
+    }
+  }
+
+  function getPageProfileName(){
+    const title = (document.title || '').replace(/\s*\|\s*Torn.*$/i,'').replace(/'s Profile/i,'').trim();
+    if(title && !/faction|torn/i.test(title)) return title;
+    const h = document.querySelector('h1,[class*="name"],[class*="title"]');
+    return (h?.textContent || '').trim().split('\n')[0] || '';
+  }
+
+
   function watchGlobalAttackClicks(){
     document.addEventListener('click', (e)=>{
       const a = e.target?.closest?.('a,button,[onclick],[data-user],[data-id]');
@@ -373,7 +440,7 @@
     if(m) return Number(m[1]);
     m = txt.match(/profiles\.php\?XID=(\d{3,10})/i);
     if(m) return Number(m[1]);
-    m = txt.match(/loader\.php\?sid=attack[^"']*?(\d{3,10})/i);
+    m = txt.match(/loader\.php\?sid=attack[^"']*?(?:user2ID=)?(\d{3,10})/i);
     return m ? Number(m[1]) : null;
   }
 
@@ -616,6 +683,7 @@
 
   function clearBadgeMarkers(){
     document.querySelectorAll('.ebsfNameBadge').forEach(b=>b.remove());
+    document.getElementById('ebsfProfileMiniBadge')?.remove();
     document.querySelectorAll('[data-ebsf-badge-done], [data-ebsf-honor-badge-done], [data-ebsf-atk-badge-done], [data-ebsf-row-badge-done], [data-ebsf-generic-done]').forEach(el=>{
       delete el.dataset.ebsfBadgeDone;
       delete el.dataset.ebsfHonorBadgeDone;
@@ -860,7 +928,7 @@
     const a=e.currentTarget.dataset.act;
     if(a==='profile') location.href=`https://www.torn.com/profiles.php?XID=${id}`;
     if(a==='attack'){
-      GM_setValue(S.lastAttack, JSON.stringify({id, name:m.name || name, ts:Date.now()}));
+      rememberAttackTarget(id, m.name || name);
       location.href=`https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
     }
     if(a==='intel') toast('⚔️ Intel is learned automatically from attacks. Admin tools can review learned data.');
@@ -987,46 +1055,57 @@
   }
 
   function detectFightEndAndAutoSave(){
-    let saved = safeJson(GM_getValue(S.lastAttack, null));
+    let saved = readRememberedAttackTarget();
     if(!saved || !saved.id){
       const found = detectTargetFromPage();
       if(found){
         saved = {id:found.id, name:found.name||'Enemy', ts:Date.now()};
-        GM_setValue(S.lastAttack, JSON.stringify(saved));
+        rememberAttackTarget(saved.id, saved.name);
       } else {
         return;
       }
     }
-    if(Date.now() - saved.ts > 1000 * 60 * 20) return;
 
-    const text = (document.body?.innerText || '').toLowerCase();
+    const bodyText = (document.body?.innerText || '');
+    const text = bodyText.toLowerCase();
 
     const winWords = [
       'you won',
       'you have won',
+      'you mugged',
       'mugged',
       'hospitalized',
+      'you hospitalized',
       'left them',
+      'you left',
       'you beat',
-      'you defeated'
+      'you defeated',
+      'victory'
     ];
     const lossWords = [
       'you lost',
       'you were defeated',
       'defeated by',
       'you have lost',
-      'stalemate'
+      'stalemate',
+      'you ran away',
+      'you were hospitalized'
     ];
 
     const won = winWords.some(w=>text.includes(w));
     const lost = lossWords.some(w=>text.includes(w));
-    if(!won && !lost) return;
+    const ended = won || lost || /fight over|result|continue|leave them|mug|hospital/i.test(bodyText);
+    if(!ended) return;
 
-    const key = `${saved.id}:${Math.floor(saved.ts/1000)}:${won?'win':'loss'}`;
+    const resultSide = won ? 'win' : lost ? 'loss' : 'unknown';
+    if(resultSide === 'unknown') return;
+
+    const key = `${saved.id}:${Math.floor((saved.ts||Date.now())/1000)}:${resultSide}`;
     if(GM_getValue(S.lastPrompted, '') === key) return;
     GM_setValue(S.lastPrompted, key);
 
     const detail = extractFightDetails(text);
+    detail.resultSide = resultSide;
     const result = classifyFightResult(text, won, detail);
     autoSaveFightResult(saved.id, saved.name || 'Enemy', result, false, detail);
   }
@@ -1034,18 +1113,19 @@
   function detectTargetFromPage(){
     const href = location.href;
     let id = extractTargetIdFromText(href);
-    if(id) return {id:Number(id), name:'Enemy'};
+    if(id) return {id:Number(id), name:getPageProfileName() || 'Enemy'};
 
-    const links = [...document.querySelectorAll('a[href*="profiles.php?XID="]')];
+    const remembered = readRememberedAttackTarget();
+    if(remembered) return remembered;
+
+    const links = [...document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="user2ID="], a[href*="sid=attack"]')];
     for(const a of links){
-      const found = extractTargetIdFromText(a.href);
+      const found = extractTargetIdFromText(a.href || a.outerHTML);
       if(found && app.user && String(found) !== String(app.user.user_id)){
-        return {id:Number(found), name:(a.textContent||'Enemy').trim() || 'Enemy'};
+        return {id:Number(found), name:(a.textContent||getPageProfileName()||'Enemy').trim() || 'Enemy'};
       }
     }
 
-    const saved = safeJson(GM_getValue(S.lastAttack, null));
-    if(saved && saved.id && Date.now() - saved.ts < 1000*60*20) return saved;
     return null;
   }
 
@@ -1196,9 +1276,11 @@
     });
 
     if(r.ok){
-      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Predictions will refresh.`);
-      refreshSingleIntel(targetId);
-      setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1200);
+      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Prediction updating...`);
+      await refreshSingleIntel(targetId, true);
+      clearBadgeMarkers?.();
+      scheduleBadgePaint?.('scan');
+      setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1500);
       return true;
     }
     toast('⚔️ Auto learning failed: '+JSON.stringify(r.error||r));
@@ -1242,57 +1324,22 @@
   }
 
 
-  async function refreshSingleIntel(targetId){
+  async function refreshSingleIntel(targetId, repaint){
     try{
       const yourTotal = app.total || GM_getValue(S.total, '');
       const r = await get('/api/player/'+encodeURIComponent(targetId)+'/intel?your_total='+encodeURIComponent(yourTotal));
       const p = r.player || r.enemy || null;
-      if(p) saveCachedIntel(targetId, p);
-    }catch(e){}
-  }
-
-
-
-  function getIntelCache(){
-    const c = safeJson(GM_getValue(S.intelCache, '{}')) || {};
-    return c && typeof c === 'object' ? c : {};
-  }
-
-  function saveIntelCache(c){
-    const entries = Object.entries(c).sort((a,b)=>(b[1].ts||0)-(a[1].ts||0)).slice(0, 700);
-    GM_setValue(S.intelCache, JSON.stringify(Object.fromEntries(entries)));
-  }
-
-  function getCachedIntel(id){
-    const c = getIntelCache();
-    const row = c[String(id)];
-    if(!row || !row.intel) return null;
-    if(Date.now() - (row.ts || 0) > 1000*60*60*24*30) return null;
-    return row.intel;
-  }
-
-  function saveCachedIntel(id, intel){
-    if(!id || !intel) return;
-    const c = getIntelCache();
-    c[String(id)] = {intel, ts:Date.now()};
-    saveIntelCache(c);
-  }
-
-  function cacheIntelFromMembers(members){
-    if(!members || !members.length) return;
-    const c = getIntelCache();
-    let changed = false;
-    for(const m of members){
-      if(!m || !m.user_id || !m.intel) continue;
-      const i = m.intel;
-      if(i.best_total || i.total || i.range_low || i.range_high){
-        c[String(m.user_id)] = {intel:i, ts:Date.now()};
-        changed = true;
+      if(p){
+        saveCachedIntel(targetId, p);
+        if(repaint){
+          clearBadgeMarkers?.();
+          scheduleBadgePaint?.('scan');
+          paintProfilePageBadge?.();
+        }
       }
-    }
-    if(changed) saveIntelCache(c);
+      return p || null;
+    }catch(e){ return null; }
   }
-
 
   function post(path,data){
     return new Promise(resolve=>{
