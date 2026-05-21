@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.2.7
-// @description  Smooth prediction badges that always show N/A first, profile-page badge, faction member badges, cached intel, and automatic learning.
+// @version      1.2.8
+// @description  Smooth prediction badges with forced N/A display, calmer login scan behavior, profile/faction badges, cached intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -80,7 +80,7 @@
 #ebsfProfileMiniBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
 
 
-#ebsfProfileFixedBadge{position:fixed;right:10px;top:182px;z-index:999997;display:inline-flex!important;align-items:center;gap:5px;padding:4px 8px;border-radius:7px;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 11px Arial,sans-serif;box-shadow:0 2px 8px #000b;pointer-events:none}
+#ebsfProfileFixedBadge{position:fixed;right:10px;top:286px;z-index:2147483647;display:inline-flex!important;align-items:center;gap:5px;padding:5px 9px;border-radius:7px;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 12px Arial,sans-serif;box-shadow:0 2px 8px #000b;pointer-events:none}
 #ebsfProfileFixedBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
 #ebsfProfileFixedBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
 #ebsfProfileFixedBadge.good{background:#422006;color:#fde68a;border-color:#f59e0b}
@@ -127,7 +127,7 @@
     render();
   }
 
-  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>{scheduleBadgePaint('manual'); paintAlwaysVisibleBadges();}, 700);}
+  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>{scheduleBadgePaint('manual'); paintAlwaysVisibleBadges(); paintProfileFixedBadge?.();}, 700);}
   function close(){document.getElementById('ebsfRoot').classList.remove('open');}
   function loadCachedScan(){
     if(app.members && app.members.length) return;
@@ -572,7 +572,7 @@
             break;
           }
         }
-        if(useful){ scheduleBadgePaint('mutation'); setTimeout(()=>paintAlwaysVisibleBadges(), 600); }
+        if(useful){ scheduleBadgePaint('mutation'); setTimeout(()=>{paintAlwaysVisibleBadges(); paintProfileFixedBadge?.();}, 600); }
       });
       ebsfBadgeObserver.observe(document.body, {childList:true, subtree:true});
     }catch(e){}
@@ -692,7 +692,7 @@
   function clearBadgeMarkers(){
     document.querySelectorAll('.ebsfNameBadge').forEach(b=>b.remove());
     document.getElementById('ebsfProfileMiniBadge')?.remove();
-    document.getElementById('ebsfProfileFixedBadge')?.remove();
+    
     document.querySelectorAll('[data-ebsf-badge-done], [data-ebsf-honor-badge-done], [data-ebsf-atk-badge-done], [data-ebsf-row-badge-done], [data-ebsf-generic-done]').forEach(el=>{
       delete el.dataset.ebsfBadgeDone;
       delete el.dataset.ebsfHonorBadgeDone;
@@ -784,7 +784,8 @@
   function isUsefulBadgePage(){
     const u = location.href;
     const title = document.title || '';
-    return u.includes('factions.php') || u.includes('profiles.php') || /profile/i.test(title) || /faction/i.test(title);
+    const body = (document.body?.innerText || '').slice(0, 3000);
+    return u.includes('factions.php') || u.includes('profiles.php') || /profile/i.test(title) || /faction/i.test(title) || /User Information|Medals|Awards|Interaction history|Actions/i.test(body);
   }
 
   function paintAlwaysVisibleBadges(){
@@ -794,33 +795,43 @@
       paintProfileFixedBadge();
     }
 
-    // Faction/war/member lists: always show a single N/A/prediction badge on visible member honor/name rows.
-    if(location.href.includes('factions.php') || /faction/i.test(document.title || '')){
+    if(location.href.includes('factions.php') || /faction/i.test(document.title || '') || /Members\s+Score\s+Status|Chain active|No active chain/i.test(document.body?.innerText || '')){
       paintFactionRowsAlways();
     }
   }
 
   function isProfileLikePage(){
-    return location.href.includes('profiles.php') || /'s Profile|Profile/i.test(document.title || '');
+    const u = location.href;
+    const title = document.title || '';
+    const body = (document.body?.innerText || '').slice(0, 3000);
+    return u.includes('profiles.php') || /'s Profile|Profile/i.test(title) || /User Information|You have not interacted with this person|Medals|Awards/i.test(body);
   }
 
   async function paintProfileFixedBadge(){
-    if(document.getElementById('ebsfProfileFixedBadge')) return;
-
-    const badge = document.createElement('div');
-    badge.id = 'ebsfProfileFixedBadge';
-    badge.className = 'unknown';
-    badge.textContent = '⚔️ N/A';
-    badge.title = 'No Battle Stat Finder intel yet';
-    document.body.appendChild(badge);
+    let badge = document.getElementById('ebsfProfileFixedBadge');
+    if(!badge){
+      badge = document.createElement('div');
+      badge.id = 'ebsfProfileFixedBadge';
+      badge.className = 'unknown';
+      badge.textContent = '⚔️ N/A';
+      badge.title = 'No Battle Stat Finder intel yet';
+      document.body.appendChild(badge);
+    }
 
     const pid = getProfilePageId?.() || extractTargetIdFromText(location.href) || detectProfileIdFromPage();
-    if(!pid || (app.user && String(pid) === String(app.user.user_id))) return;
+    if(!pid || (app.user && String(pid) === String(app.user.user_id))){
+      badge.className = 'unknown';
+      badge.textContent = '⚔️ N/A';
+      badge.title = 'No Battle Stat Finder intel yet';
+      return;
+    }
 
     const cached = getCachedIntel(pid);
     if(cached) applyFloatingBadge(badge, cached, true);
 
-    // One refresh call only for profile pages.
+    if(badge.dataset.ebsfProfileFetched === String(pid)) return;
+    badge.dataset.ebsfProfileFetched = String(pid);
+
     try{
       const yourTotal = app.total || GM_getValue(S.total, '');
       const r = await get('/api/player/'+encodeURIComponent(pid)+'/intel?your_total='+encodeURIComponent(yourTotal));
@@ -828,6 +839,10 @@
       if(p){
         saveCachedIntel(pid, p);
         applyFloatingBadge(badge, p, false);
+      }else if(!cached){
+        badge.className = 'unknown';
+        badge.textContent = '⚔️ N/A';
+        badge.title = 'No Battle Stat Finder intel yet';
       }
     }catch(e){}
   }
@@ -1087,14 +1102,19 @@
 
 
   async function autoStartAfterLogin(){
-    // Starts the app immediately after login:
-    // 1) switches to Targets tab
-    // 2) tries active-war auto scan
-    // 3) caches predictions
-    // 4) paints badges
     app.tab = 'targets';
     setTabs();
     render();
+
+    // Always start badges immediately after login.
+    setTimeout(()=>{ paintAlwaysVisibleBadges?.(); scheduleBadgePaint?.('manual'); }, 500);
+
+    // Only auto-scan on faction pages. On profile pages it should not show a scary failed scan.
+    const onFactionPage = location.href.includes('factions.php') || /faction/i.test(document.title || '');
+    if(!onFactionPage && !app.enemyFaction){
+      msg('Logged in. Badges are active. Go to a faction war page or enter enemy faction ID to scan.');
+      return;
+    }
 
     try{
       const r=await post('/api/war/enemy-scan',{
@@ -1109,19 +1129,18 @@
         GM_setValue(S.enemyFaction,app.enemyFaction);
         GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
         cacheIntelFromMembers(app.members);
-        clearBadgeMarkers();
-        buildBadgeNameMap();
+        clearBadgeMarkers?.();
+        buildBadgeNameMap?.();
         msg('Logged in and auto-scanned: '+app.members.length+' targets.');
         render();
-        setTimeout(()=>scheduleBadgePaint('scan'), 600);
+        setTimeout(()=>{ scheduleBadgePaint?.('scan'); paintAlwaysVisibleBadges?.(); }, 600);
       } else {
-        msg('Logged in. Auto-scan needs an active war or enemy faction ID: '+JSON.stringify(r.error||r));
+        msg('Logged in. Badges are active. Press Scan on a faction war page if targets do not load.');
       }
     }catch(e){
-      msg('Logged in. Auto-scan failed. You can press Scan manually.');
+      msg('Logged in. Badges are active. Press Scan manually on a faction war page.');
     }
   }
-
 
   async function scan(){
     if(!app.user || !app.key){
