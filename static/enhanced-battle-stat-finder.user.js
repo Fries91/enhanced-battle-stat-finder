@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.1.4
-// @description  War target finder with clean rules/API settings, colored stat prediction badges, admin intel, and automatic learning.
+// @version      1.1.6
+// @description  War target finder with colored prediction badges, gray N/A for no intel, clean settings, admin intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -59,13 +59,13 @@
     #ebsfFightPrompt{position:fixed;left:10px;right:10px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:12px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000}
     #ebsfFightPrompt b{color:#facc15}.ebsfPromptBtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.ebsfPromptBtns button{background:#1f2937;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:8px;font-weight:800}.ebsfPromptBtns button:first-child{background:#facc15;color:#111827;border-color:#facc15}
 
-.ebsfNameBadge{display:inline-flex;align-items:center;margin-left:5px;padding:2px 6px;border-radius:999px;border:1px solid #475569;font-size:10px;font-weight:900;line-height:1;background:#111827;color:#cbd5e1;vertical-align:middle;box-shadow:0 1px 4px #0008}
+.ebsfNameBadge{display:inline-flex!important;align-items:center;justify-content:center;margin-left:4px;padding:2px 6px;border-radius:999px;border:1px solid #475569;font-size:10px;font-weight:900;line-height:1;background:#111827;color:#cbd5e1;vertical-align:middle;box-shadow:0 1px 4px #0008;position:relative;z-index:20;min-width:28px}
 .ebsfNameBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
 .ebsfNameBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
 .ebsfNameBadge.good{background:#422006;color:#fde68a;border-color:#f59e0b}
 .ebsfNameBadge.difficult{background:#431407;color:#fdba74;border-color:#f97316}
 .ebsfNameBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
-.ebsfNameBadge.unknown{background:#020617;color:#cbd5e1;border-color:#64748b}
+.ebsfNameBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
 
     @media(max-width:760px){#ebsfPanel{width:calc(100vw - 6px);height:calc(100vh - 6px);border-radius:10px}.grid,.row,.statsBox{grid-template-columns:1fr}.target{grid-template-columns:1fr}.acts{justify-content:flex-start}}
   `);
@@ -73,7 +73,7 @@
   boot();
   watchAttackPage();
   injectNameBadges();
-  setInterval(injectNameBadges, 12000);
+  setInterval(injectNameBadges, 7000);
   watchGlobalAttackClicks();
 
   function boot(){
@@ -330,43 +330,119 @@
 
 
 
+
   async function injectNameBadges(){
-    // Small prediction pill beside Torn profile links/names on faction-style pages.
-    // It uses learned/saved intel already in the backend. No profile-page panel.
-    const links = [...document.querySelectorAll('a[href*="profiles.php?XID="]')].slice(0, 90);
-    if(!links.length) return;
+    // Handles normal profile links AND Torn faction war tables where the honor bar/name
+    // is often not a normal profile link.
+    const targets = collectBadgeTargets().slice(0, 140);
+    if(!targets.length) return;
 
     const yourTotal = app.total || GM_getValue(S.total, '');
-    for(const a of links){
-      if(a.dataset.ebsfBadgeDone === '1') continue;
-      const id = extractTargetIdFromText(a.href);
-      if(!id || (app.user && String(id) === String(app.user.user_id))) continue;
-      a.dataset.ebsfBadgeDone = '1';
+    for(const t of targets){
+      if(!t.id || !t.mount || t.mount.dataset.ebsfBadgeDone === '1') continue;
+      if(app.user && String(t.id) === String(app.user.user_id)) continue;
+
+      t.mount.dataset.ebsfBadgeDone = '1';
 
       const badge = document.createElement('span');
       badge.className = 'ebsfNameBadge unknown';
       badge.textContent = '...';
       badge.title = 'Battle Stat Finder loading prediction';
-      a.insertAdjacentElement('afterend', badge);
+
+      // For honor bars, append after the honor/name block; for links, insert after link.
+      try {
+        if(t.mode === 'after') t.mount.insertAdjacentElement('afterend', badge);
+        else t.mount.appendChild(badge);
+      } catch(e) {
+        continue;
+      }
 
       try{
-        const r = await get('/api/player/'+encodeURIComponent(id)+'/intel?your_total='+encodeURIComponent(yourTotal));
+        const r = await get('/api/player/'+encodeURIComponent(t.id)+'/intel?your_total='+encodeURIComponent(yourTotal));
         const p = r.player || r.enemy || null;
         if(!p){
-          badge.textContent = '?';
+          badge.textContent = 'N/A';
           badge.className = 'ebsfNameBadge unknown';
-          badge.title = 'No Battle Stat Finder prediction yet';
+          badge.title = 'No Battle Stat Finder intel yet';
           continue;
         }
+
         const label = (p.label || 'Unknown').toLowerCase();
         badge.className = 'ebsfNameBadge ' + label;
         badge.textContent = fmtShort(p.best_total || p.total || ((p.range_low && p.range_high) ? ((p.range_low+p.range_high)/2) : 0));
         badge.title = `Battle Stat Finder: ${p.label || 'Unknown'} • ${fmt(p.best_total||p.total)} • ${Math.round(p.confidence||0)}% confidence`;
       }catch(e){
-        badge.textContent = '?';
+        badge.textContent = 'N/A';
         badge.className = 'ebsfNameBadge unknown';
       }
     }
+  }
+
+  function collectBadgeTargets(){
+    const out = [];
+    const seen = new Set();
+
+    function add(id, mount, mode){
+      id = Number(id);
+      if(!id || !mount || seen.has(id + ':' + nodeKey(mount))) return;
+      seen.add(id + ':' + nodeKey(mount));
+      out.push({id, mount, mode: mode || 'inside'});
+    }
+
+    // 1) Normal profile links.
+    [...document.querySelectorAll('a[href*="profiles.php?XID="]')].forEach(a=>{
+      const id = extractTargetIdFromText(a.href);
+      if(id) add(id, a, 'after');
+    });
+
+    // 2) Attack links/buttons often contain user2ID even when the honor bar is not linked.
+    [...document.querySelectorAll('a[href*="user2ID="], a[href*="sid=attack"], button, [onclick], [data-user], [data-id]')].forEach(el=>{
+      const blob = [el.href, el.getAttribute('href'), el.getAttribute('onclick'), el.getAttribute('data-user'), el.getAttribute('data-id'), el.outerHTML].filter(Boolean).join(' ');
+      const id = extractTargetIdFromText(blob);
+      if(!id) return;
+
+      const row = el.closest('tr, li, [class*="row"], [class*="member"], [class*="table"], div') || el.parentElement;
+      const mount = findHonorMount(row) || row || el;
+      add(id, mount, 'inside');
+    });
+
+    // 3) Torn sometimes stores profile IDs in generic data attrs.
+    [...document.querySelectorAll('[data-xid], [data-userid], [data-user-id], [data-player], [data-playerid]')].forEach(el=>{
+      const id = el.getAttribute('data-xid') || el.getAttribute('data-userid') || el.getAttribute('data-user-id') || el.getAttribute('data-player') || el.getAttribute('data-playerid');
+      const mount = findHonorMount(el.closest('tr, li, div')) || el;
+      add(id, mount, 'inside');
+    });
+
+    return out;
+  }
+
+  function findHonorMount(row){
+    if(!row) return null;
+
+    // Prefer honor bar/name-looking elements.
+    const selectors = [
+      '[class*="honor"]',
+      '[class*="user"]',
+      '[class*="name"]',
+      '[class*="member"]',
+      'a[href*="profiles.php"]'
+    ];
+    for(const s of selectors){
+      const found = row.querySelector?.(s);
+      if(found && !found.classList?.contains('ebsfNameBadge')) return found;
+    }
+
+    // Faction war table: first large content cell usually holds icons + honor bar.
+    const cells = row.querySelectorAll?.('td, [class*="cell"], [class*="column"]') || [];
+    if(cells.length) return cells[0];
+
+    return row;
+  }
+
+  function nodeKey(node){
+    if(!node.dataset) node.dataset = {};
+    if(!node.dataset.ebsfNodeKey) node.dataset.ebsfNodeKey = Math.random().toString(36).slice(2);
+    return node.dataset.ebsfNodeKey;
   }
 
   function fmtShort(n){
@@ -378,6 +454,8 @@
     if(n>=1e3)return(n/1e3).toFixed(0)+'k';
     return String(Math.round(n));
   }
+
+
 
 
   async function adminIntel(){
