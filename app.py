@@ -8,7 +8,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder v1.3.2"
+APP_NAME = "Enhanced Battle Stat Finder v1.3.3"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {
     int(x.strip())
@@ -19,6 +19,7 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
 TORN_API_BASE = "https://api.torn.com"
 TORNSTATS_API_BASE = "https://www.tornstats.com/api/v2"
 YATA_API_BASE = os.environ.get("YATA_API_BASE", "")
+FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com")
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
@@ -273,6 +274,8 @@ def source_weight(source, age_seconds=0):
         "bsp": 78,
         "fair_fight_scout": 72,
         "ffs": 72,
+        "ffscouter": 70,
+        "ff_base": 68,
         "attack_learning": 65,
         "estimate": 45,
     }.get((source or "").lower(), 50)
@@ -553,6 +556,227 @@ def manual_spy():
     if not ok:
         return jsonify({"ok": False, "error": err}), 400
     return jsonify({"ok": True})
+
+
+def store_external_estimate(target_id, target_name, target_faction_id, est, low=None, high=None, source="ffscouter", source_detail="", confidence=58, submitted_by=None):
+    target_id = int(target_id or 0)
+    est = clean_num(est)
+    if not target_id or not est:
+        return False
+
+    low = clean_num(low) or (est * 0.82)
+    high = clean_num(high) or (est * 1.22)
+    ts = now_ts()
+
+    with db() as con:
+        con.execute(
+            """
+            INSERT INTO external_estimates
+            (target_id, target_name, target_faction_id, estimate_total, range_low, range_high, source, source_detail, confidence, submitted_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (target_id, target_name, target_faction_id, est, low, high, source, source_detail, confidence, submitted_by, ts),
+        )
+
+        old = con.execute("SELECT confidence FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
+        old_conf = old["confidence"] if old else 0
+
+        # FF base is a starting point. It should fill blanks or replace weak/local estimates,
+        # but not overwrite spies or strong learned predictions.
+        if confidence >= old_conf or old_conf < 60:
+            con.execute(
+                """
+                INSERT INTO enemy_stats
+                (user_id, name, faction_id, total, range_low, range_high, build_shape, confidence, source, source_detail, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                  name=COALESCE(excluded.name, enemy_stats.name),
+                  faction_id=COALESCE(excluded.faction_id, enemy_stats.faction_id),
+                  total=excluded.total,
+                  range_low=excluded.range_low,
+                  range_high=excluded.range_high,
+                  build_shape='unknown',
+                  confidence=CASE WHEN enemy_stats.confidence < 60 THEN excluded.confidence ELSE enemy_stats.confidence END,
+                  source=CASE WHEN enemy_stats.confidence < 60 THEN excluded.source ELSE enemy_stats.source END,
+                  source_detail=CASE WHEN enemy_stats.confidence < 60 THEN excluded.source_detail ELSE enemy_stats.source_detail END,
+                  updated_at=excluded.updated_at
+                """,
+                (target_id, target_name, target_faction_id, est, low, high, "unknown", confidence, source, source_detail, ts),
+            )
+    return True
+
+
+def parse_ffscouter_payload(payload):
+    """Accept several possible FF-style response shapes and return {target_id: row}."""
+    if not isinstance(payload, (dict, list)):
+        return {}
+
+    if isinstance(payload, list):
+        items = payload
+    else:
+        data = payload.get("data")
+        if data is None:
+            data = payload.get("stats") or payload.get("targets") or payload.get("results") or payload.get("players") or payload
+        if isinstance(data, dict):
+            # Could be keyed by player id.
+            items = []
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    v = dict(v)
+                    v.setdefault("target_id", k)
+                    items.append(v)
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+
+    out = {}
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        tid = row.get("target_id") or row.get("user_id") or row.get("player_id") or row.get("id") or row.get("XID")
+        try:
+            tid = int(tid)
+        except Exception:
+            continue
+
+        est = (
+            row.get("bs_estimate")
+            or row.get("battle_stats_estimate")
+            or row.get("estimated_stats")
+            or row.get("estimate")
+            or row.get("estimated_total")
+            or row.get("total")
+            or row.get("bs")
+        )
+        est = clean_num(est)
+        if not est:
+            continue
+
+        out[tid] = {
+            "target_id": tid,
+            "estimate_total": est,
+            "human": row.get("bs_estimate_human") or row.get("estimate_human") or row.get("human") or "",
+            "fair_fight": row.get("fair_fight") or row.get("ff") or row.get("fairfight") or "",
+            "last_updated": row.get("last_updated") or row.get("updated_at") or row.get("age") or "",
+            "raw": row,
+        }
+    return out
+
+
+def fetch_ffscouter_estimates(api_key, target_ids):
+    if not FF_SCOUTER_API_BASE:
+        return {}, "FF_SCOUTER_API_BASE is not configured"
+
+    base = FF_SCOUTER_API_BASE.rstrip("/")
+    targets = ",".join(str(int(x)) for x in target_ids if str(x).isdigit())
+    if not targets:
+        return {}, "No targets"
+
+    # Keep this configurable/flexible because FF deployments have used different paths.
+    paths = [
+        "/api/v1/get-stats",
+        "/api/get-stats",
+        "/api/stats",
+    ]
+    last_err = None
+
+    for path in paths:
+        try:
+            r = requests.get(
+                base + path,
+                params={"key": api_key, "targets": targets},
+                headers={"User-Agent": "EnhancedBattleStatFinder/1.3.3"},
+                timeout=20,
+            )
+            if r.status_code >= 400:
+                last_err = f"{path} HTTP {r.status_code}"
+                continue
+            payload = r.json()
+            parsed = parse_ffscouter_payload(payload)
+            if parsed:
+                return parsed, None
+            last_err = f"{path} returned no usable estimates"
+        except Exception as e:
+            last_err = str(e)
+    return {}, last_err or "FF Scouter lookup failed"
+
+
+@app.post("/api/ffscouter/base-import")
+@require_json
+def ffscouter_base_import():
+    body = request.get_json(force=True)
+    api_key = (body.get("api_key") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "Missing api_key"}), 400
+
+    targets = body.get("targets") or []
+    if not isinstance(targets, list):
+        return jsonify({"ok": False, "error": "targets must be a list"}), 400
+
+    target_map = {}
+    ids = []
+    for t in targets[:120]:
+        if isinstance(t, dict):
+            tid = int(t.get("user_id") or t.get("target_id") or t.get("id") or 0)
+            if tid:
+                ids.append(tid)
+                target_map[tid] = t
+        else:
+            try:
+                tid = int(t)
+                ids.append(tid)
+                target_map[tid] = {"user_id": tid}
+            except Exception:
+                pass
+
+    if not ids:
+        return jsonify({"ok": False, "error": "No target IDs supplied"}), 400
+
+    estimates, err = fetch_ffscouter_estimates(api_key, ids)
+    imported = []
+    submitted_by = body.get("submitted_by")
+    target_faction_id = body.get("target_faction_id")
+
+    for tid, row in estimates.items():
+        t = target_map.get(tid, {})
+        name = t.get("name") or t.get("target_name") or None
+        detail_bits = ["FF Scouter base estimate"]
+        if row.get("human"):
+            detail_bits.append(str(row["human"]))
+        if row.get("fair_fight"):
+            detail_bits.append(f"FF {row['fair_fight']}")
+        if row.get("last_updated"):
+            detail_bits.append(f"updated {row['last_updated']}")
+
+        ok = store_external_estimate(
+            target_id=tid,
+            target_name=name,
+            target_faction_id=target_faction_id or t.get("faction_id"),
+            est=row["estimate_total"],
+            source="ffscouter",
+            source_detail=" • ".join(detail_bits),
+            confidence=float(body.get("confidence") or 58),
+            submitted_by=submitted_by,
+        )
+        if ok:
+            imported.append(tid)
+
+    your_total = clean_num(body.get("your_total"))
+    predictions = []
+    if imported:
+        with db() as con:
+            placeholders = ",".join("?" for _ in imported)
+            rows = con.execute(f"SELECT * FROM enemy_stats WHERE user_id IN ({placeholders})", imported).fetchall()
+            predictions = [normalize_enemy_row(r, your_total) for r in rows]
+
+    return jsonify({
+        "ok": True,
+        "imported": len(imported),
+        "predictions": predictions,
+        "warning": err if not imported else None,
+    })
+
 
 
 @app.post("/api/estimate/manual")
