@@ -173,6 +173,47 @@ def total_stats(strength=None, defense=None, speed=None, dexterity=None):
     return None
 
 
+def extract_battle_stats(payload):
+    """Best-effort parser for Torn user battlestats responses.
+    Returns strength/defense/speed/dexterity/total when present.
+    """
+    def pick(d, names):
+        if not isinstance(d, dict):
+            return None
+        for n in names:
+            if n in d:
+                v = clean_num(d.get(n))
+                if v is not None:
+                    return v
+        return None
+
+    containers = [payload]
+    for key in ("battle_stats", "battlestats", "stats", "personalstats"):
+        if isinstance(payload, dict) and isinstance(payload.get(key), dict):
+            containers.append(payload.get(key))
+
+    strength = defense = speed = dexterity = total = None
+    for c in containers:
+        strength = strength or pick(c, ("strength", "str"))
+        defense = defense or pick(c, ("defense", "defence", "def"))
+        speed = speed or pick(c, ("speed", "spd"))
+        dexterity = dexterity or pick(c, ("dexterity", "dex"))
+        total = total or pick(c, ("total", "total_battle_stats", "battle_stats_total", "totalstats"))
+
+    calc_total = total_stats(strength, defense, speed, dexterity)
+    if calc_total:
+        total = calc_total
+
+    return {
+        "strength": strength,
+        "defense": defense,
+        "speed": speed,
+        "dexterity": dexterity,
+        "total": total,
+        "effective_total": total,
+    }
+
+
 def detect_build_shape(strength, defense, speed, dexterity):
     vals = {
         "strength": clean_num(strength) or 0,
@@ -263,7 +304,7 @@ def login():
     if not api_key:
         return jsonify({"ok": False, "error": "Missing Torn API key"}), 400
 
-    data = torn_request(api_key, "user", "basic,profile")
+    data = torn_request(api_key, "user", "basic,profile,battlestats")
     if data.get("error"):
         return jsonify({"ok": False, "error": data.get("error")}), 401
 
@@ -272,6 +313,8 @@ def login():
     faction = data.get("faction") or {}
     faction_id = faction.get("faction_id") or faction.get("id") or 0
     faction_name = faction.get("faction_name") or faction.get("name") or ""
+
+    battle_stats = extract_battle_stats(data)
 
     with db() as con:
         con.execute(
@@ -296,6 +339,7 @@ def login():
             "faction_id": faction_id,
             "faction_name": faction_name,
             "is_admin": user_id in ADMIN_USER_IDS,
+            "battle_stats": battle_stats,
         }
     })
 
@@ -641,7 +685,7 @@ def attack_result():
     target_id = int(body.get("target_id") or 0)
     result = body.get("result")
 
-    if not attacker_id or not target_id or result not in {"easy_win", "close_win", "close_loss", "hard_loss", "could_not_hit"}:
+    if not attacker_id or not target_id or result not in {"easy_win", "close_win", "close_loss", "hard_loss", "could_not_hit", "auto_win", "auto_loss", "generic_win", "generic_loss"}:
         return jsonify({"ok": False, "error": "Missing attacker_id, target_id, or valid result"}), 400
 
     with db() as con:
@@ -686,10 +730,10 @@ def recalc_learning(target_id):
 
             if r["result"] == "easy_win":
                 highs.append(t * 0.85)
-            elif r["result"] == "close_win":
+            elif r["result"] in ("close_win", "generic_win", "auto_win"):
                 lows.append(t * 0.75)
                 highs.append(t * 1.08)
-            elif r["result"] == "close_loss":
+            elif r["result"] in ("close_loss", "generic_loss", "auto_loss"):
                 lows.append(t * 0.95)
                 highs.append(t * 1.35)
             elif r["result"] == "hard_loss":
@@ -793,4 +837,3 @@ def static_files(filename):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-
