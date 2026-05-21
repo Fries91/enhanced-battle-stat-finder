@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.2
-// @description  Honor-bar-only prediction badges with stronger universal PDA fight learning, cached intel, and N/A fallback.
+// @version      1.3.3
+// @description  Honor-bar prediction badges with optional FF Scouter base estimates, cached intel, N/A fallback, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -31,7 +31,8 @@
     lastPrompted: 'ebsf_last_auto_learned_attack',
     lastScan: 'ebsf_last_scan_payload',
     intelCache: 'ebsf_intel_cache',
-    badgeMap: 'ebsf_badge_name_map'
+    badgeMap: 'ebsf_badge_name_map',
+    ffBase: 'ebsf_ff_base_enabled'
   };
 
   let app = {
@@ -41,6 +42,7 @@
     enemyFaction: GM_getValue(S.enemyFaction, ''),
     tornstats: GM_getValue(S.tornstats, ''),
     yata: GM_getValue(S.yata, ''),
+    ffBase: GM_getValue(S.ffBase, false),
     members: [],
     selected: null,
     tab: 'targets',
@@ -320,7 +322,7 @@
           <li>Auto-starts after login with a BSP-style light label painter.</li>
           <li>Shows sticky colored prediction badges when intel is known.</li>
           <li>Stores known predictions locally so they stay visible on reload, then paints badges from cache without mass backend calls.</li>
-          <li>Automatically learns from attack pages without users saving results.</li>
+          <li>Automatically learns from attack pages without users saving results.</li><li>Optional FF Scouter base intel can fill early N/A estimates.</li>
         </ul>
       </div>
 
@@ -336,7 +338,7 @@
         <p class="note"><b>Required:</b> Torn limited API key. It is used to confirm your Torn identity and faction, detect your battle stat total where your key allows it, and scan active war/faction data for target sorting.</p>
         <p class="note"><b>Local storage:</b> your Torn key is saved in your userscript manager/PDA storage so you do not need to type it every time.</p>
         <p class="note"><b>Backend storage:</b> the backend stores a one-way hash of your Torn key for login tracking, not the raw Torn key. Learned data can include user ID, faction ID, detected stat total, target ID, simple fight result labels, and fight-read confidence.</p>
-        <p class="note"><b>Shared learning:</b> learned target intel is intended for your faction’s use so predictions improve over time. Optional TornStats/YATA fields are not required for normal users and are only saved if entered.</p>
+        <p class="note"><b>Shared learning:</b> learned target intel is intended for your faction’s use so predictions improve over time. Optional TornStats/YATA/FF Scouter base intel support is not required for normal users. FF base intel only runs if enabled and is used as a starting estimate.</p>
       </div>
 
       <div class="loginBottom">
@@ -350,6 +352,12 @@
 
         <label class="keyLabel" for="yatakey">YATA Key — Optional / Saved Only</label>
         <input id="yatakey" class="inp" type="password" placeholder="Optional: saved for later YATA support" value="${esc(app.yata)}">
+
+        <label class="keyLabel" style="margin-top:12px">
+          <input id="ffbase" type="checkbox" ${app.ffBase?'checked':''} style="width:auto;margin-right:6px">
+          Use FF Scouter Base Intel — Optional
+        </label>
+        <p class="note">When enabled, scanned target IDs are checked for FF Scouter base estimates. This gives N/A players a starting estimate, then your fight learning can improve or override it.</p>
 
         <button id="login" class="btn" style="margin-top:10px">Login / Save All</button>
 
@@ -1165,10 +1173,12 @@
     app.key=q('#key').value.trim();
     app.tornstats=(q('#tskey')?.value||'').trim();
     app.yata=(q('#yatakey')?.value||'').trim();
+    app.ffBase=!!q('#ffbase')?.checked;
 
     GM_setValue(S.key,app.key);
     GM_setValue(S.tornstats,app.tornstats);
     GM_setValue(S.yata,app.yata);
+    GM_setValue(S.ffBase,app.ffBase);
 
     const r=await post('/api/login',{api_key:app.key});
     if(r.ok){
@@ -1212,9 +1222,10 @@
         GM_setValue(S.enemyFaction,app.enemyFaction);
         GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
         cacheIntelFromMembers(app.members);
+        const ffAdded = await importFFBaseForMembers();
         clearBadgeMarkers?.();
         buildBadgeNameMap?.();
-        msg('Logged in and auto-scanned: '+app.members.length+' targets.');
+        msg('Logged in and auto-scanned: '+app.members.length+' targets'+(ffAdded?` • FF base added ${ffAdded}`:'')+'.');
         render();
         setTimeout(()=>{ scheduleBadgePaint?.('scan');
           setTimeout(()=>paintHonorBadgesOnly?.(), 600); paintHonorBadgesOnly?.(); }, 600);
@@ -1225,6 +1236,59 @@
       msg('Logged in. Badges are active. Press Scan manually on a faction war page.');
     }
   }
+
+
+  async function importFFBaseForMembers(){
+    if(!app.ffBase || !app.key || !app.members || !app.members.length) return 0;
+
+    const targets = app.members
+      .filter(m => m && m.user_id)
+      .slice(0, 120)
+      .map(m => ({user_id:m.user_id, name:m.name, faction_id:m.faction_id || app.enemyFaction}));
+
+    if(!targets.length) return 0;
+
+    const r = await post('/api/ffscouter/base-import', {
+      api_key: app.key,
+      targets,
+      your_total: app.total,
+      target_faction_id: app.enemyFaction,
+      submitted_by: app.user?.user_id
+    });
+
+    if(!r.ok){
+      msg('Scan complete. FF base intel failed: '+JSON.stringify(r.error||r.warning||r));
+      return 0;
+    }
+
+    const preds = r.predictions || [];
+    const byId = new Map(preds.map(p => [Number(p.user_id), p]));
+    let changed = 0;
+
+    for(const m of app.members){
+      const p = byId.get(Number(m.user_id));
+      if(!p) continue;
+      const curConf = Number(m.intel?.confidence || 0);
+      const newConf = Number(p.confidence || 0);
+      if(!m.intel || m.intel.source === 'none' || curConf < 60 || newConf >= curConf){
+        m.intel = p;
+        saveCachedIntel(m.user_id, p);
+        changed++;
+      }
+    }
+
+    if(changed){
+      GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
+      cacheIntelFromMembers(app.members);
+      buildBadgeNameMap?.();
+      clearBadgeMarkers?.();
+      scheduleBadgePaint?.('scan');
+      setTimeout(()=>paintHonorBadgesOnly?.(), 600);
+    }
+
+    return changed;
+  }
+
 
   async function scan(){
     if(!app.user || !app.key){
@@ -1241,7 +1305,8 @@
       GM_setValue(S.enemyFaction,app.enemyFaction);
       GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
       cacheIntelFromMembers(app.members);
-      msg('Scan complete: '+app.members.length+' enemies. Badges refreshing...');
+      const ffAdded = await importFFBaseForMembers();
+      msg('Scan complete: '+app.members.length+' enemies'+(ffAdded?` • FF base added ${ffAdded}`:'')+'. Badges refreshing...');
       setTimeout(()=>scheduleBadgePaint('scan'), 600);
     } else msg('Scan failed: '+JSON.stringify(r.error||r));
   }
