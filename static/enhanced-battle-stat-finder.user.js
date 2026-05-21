@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.3
-// @description  Honor-bar prediction badges with optional FF Scouter base estimates, cached intel, N/A fallback, and automatic learning.
+// @version      1.3.4
+// @description  Honor-bar prediction badges with instant post-fight visible estimates, FF base intel, cached intel, N/A fallback, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -1573,6 +1573,73 @@
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
+
+  function normalizeFightResultForEstimate(result, detail){
+    if(['easy_win','close_win','generic_win','auto_win','close_loss','generic_loss','auto_loss','hard_loss'].includes(result)) return result;
+    const side = detail && detail.resultSide;
+    if(side === 'win') return 'generic_win';
+    if(side === 'loss') return 'generic_loss';
+    if(String(result||'').includes('win')) return 'generic_win';
+    if(String(result||'').includes('loss')) return 'generic_loss';
+    return result || 'generic_win';
+  }
+
+  function makeImmediateFightIntel(result, targetId){
+    const t = Number(String(app.total || GM_getValue(S.total, '') || '').replace(/,/g,''));
+    if(!t) return null;
+
+    let low, high, label;
+    if(result === 'easy_win'){
+      low = t * 0.05; high = t * 0.70; label = 'Easy';
+    } else if(result === 'close_win'){
+      low = t * 0.75; high = t * 1.05; label = 'Fair';
+    } else if(result === 'generic_win' || result === 'auto_win'){
+      low = t * 0.55; high = t * 1.00; label = 'Fair';
+    } else if(result === 'close_loss'){
+      low = t * 0.95; high = t * 1.25; label = 'Difficult';
+    } else if(result === 'generic_loss' || result === 'auto_loss'){
+      low = t * 1.00; high = t * 1.55; label = 'Difficult';
+    } else if(result === 'hard_loss'){
+      low = t * 1.35; high = t * 2.20; label = 'Avoid';
+    } else {
+      low = t * 0.75; high = t * 1.25; label = 'Unknown';
+    }
+
+    const total = Math.round((low + high) / 2);
+    return {
+      user_id: Number(targetId),
+      total,
+      best_total: total,
+      range_low: Math.round(low),
+      range_high: Math.round(high),
+      label,
+      confidence: 42,
+      source: 'instant_fight_learning',
+      source_detail: 'instant estimate from latest fight'
+    };
+  }
+
+  function updateBadgeForTargetNow(targetId, intel){
+    if(!targetId || !intel) return;
+    saveCachedIntel(targetId, intel);
+    buildBadgeNameMap?.();
+
+    document.querySelectorAll('.ebsfNameBadge').forEach(b=>{
+      const host = b.closest?.('tr, li, [class*="row"], [class*="member"], [class*="honor"], [class*="name"], a[href*="profiles.php"]') || b.parentElement;
+      const blob = (host?.innerHTML || '') + ' ' + (host?.textContent || '');
+      const id = extractTargetIdFromText(blob);
+      if(id && Number(id) === Number(targetId)){
+        updateHonorBadge?.(b, intel);
+      }
+    });
+
+    buildBadgeNameMap?.();
+    scheduleBadgePaint?.('scan');
+    setTimeout(()=>paintHonorBadgesOnly?.(), 250);
+    setTimeout(()=>paintHonorBadgesOnly?.(), 900);
+  }
+
+
   async function autoSaveFightResult(targetId, targetName, result, manualButton, detail){
     if(!app.user || !app.user.user_id){
       app.user = safeJson(GM_getValue(S.user, null));
@@ -1582,6 +1649,14 @@
     if(!app.user?.user_id || !app.total){
       toast('⚔️ Auto learning skipped: login in Settings first so I know your stats.');
       return false;
+    }
+
+    result = normalizeFightResultForEstimate(result, detail);
+    const instant = makeImmediateFightIntel(result, targetId);
+
+    if(instant){
+      updateBadgeForTargetNow(targetId, instant);
+      toast(`⚔️ Fight learned for ${targetName}. Showing estimate now...`);
     }
 
     const r=await post('/api/attack/result',{
@@ -1597,54 +1672,27 @@
     });
 
     if(r.ok){
-      toast(`⚔️ Learned ${targetName} [${targetId}] as ${prettyResult(result)}. Updating badge...`);
-      const p = await refreshSingleIntel(targetId, true);
-      if(!p){
-        // Backend may not return a stat instantly if confidence is weak. Cache a broad fallback so N/A changes.
-        const fallback = makeLocalFallbackIntel(result, targetId);
-        if(fallback) saveCachedIntel(targetId, fallback);
+      const p = await refreshSingleIntel(targetId, false);
+      if(p){
+        updateBadgeForTargetNow(targetId, p);
+        toast(`⚔️ Backend prediction updated for ${targetName}.`);
+      }else if(instant){
+        updateBadgeForTargetNow(targetId, instant);
       }
-      clearBadgeMarkers?.();
-      buildBadgeNameMap?.();
-      scheduleBadgePaint?.('scan');
-          setTimeout(()=>paintHonorBadgesOnly?.(), 600);
-      setTimeout(()=>paintHonorBadgesOnly?.(), 600);
       setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1800);
       return true;
     }
+
+    if(instant){
+      updateBadgeForTargetNow(targetId, instant);
+      toast('⚔️ Backend save failed, but local estimate was kept.');
+      return false;
+    }
+
     toast('⚔️ Auto learning failed: '+JSON.stringify(r.error||r));
     return false;
   }
 
-  function makeLocalFallbackIntel(result, targetId){
-    const t = Number(String(app.total || GM_getValue(S.total, '') || '').replace(/,/g,''));
-    if(!t) return null;
-
-    let low = null, high = null;
-    if(result === 'easy_win'){
-      low = t * 0.10; high = t * 0.85;
-    }else if(['close_win','generic_win','auto_win'].includes(result)){
-      low = t * 0.75; high = t * 1.08;
-    }else if(['close_loss','generic_loss','auto_loss'].includes(result)){
-      low = t * 0.95; high = t * 1.35;
-    }else if(result === 'hard_loss'){
-      low = t * 1.20; high = t * 1.90;
-    }else{
-      return null;
-    }
-
-    return {
-      user_id: targetId,
-      total: Math.round((low + high) / 2),
-      best_total: Math.round((low + high) / 2),
-      range_low: Math.round(low),
-      range_high: Math.round(high),
-      label: 'Unknown',
-      confidence: 35,
-      source: 'local_learning',
-      source_detail: 'local post-fight fallback'
-    };
-  }
 
   function toast(message){
     document.getElementById('ebsfAutoToast')?.remove();
@@ -1690,16 +1738,12 @@
       const p = r.player || r.enemy || null;
       if(p){
         saveCachedIntel(targetId, p);
-        if(repaint){
-          clearBadgeMarkers?.();
-          scheduleBadgePaint?.('scan');
-          setTimeout(()=>paintHonorBadgesOnly?.(), 600);
-          paintHonorBadgesOnly?.();
-        }
+        if(repaint) updateBadgeForTargetNow(targetId, p);
       }
       return p || null;
     }catch(e){ return null; }
   }
+
 
   function post(path,data){
     return new Promise(resolve=>{
