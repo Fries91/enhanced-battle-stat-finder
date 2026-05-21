@@ -8,7 +8,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder v1.0.7"
+APP_NAME = "Enhanced Battle Stat Finder v1.1.1"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {
     int(x.strip())
@@ -814,6 +814,43 @@ def enemy_intel(target_id):
         "learning": [dict(x) for x in learning],
     })
 
+
+@app.get("/api/learning/recent")
+def recent_learning():
+    user_id = int(request.args.get("user_id") or 0)
+    if not user_id:
+        return jsonify({"ok": False, "error": "Missing user_id"}), 400
+
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT target_id, target_name, result, created_at
+            FROM attack_learning
+            WHERE attacker_id=?
+            ORDER BY created_at DESC
+            LIMIT 12
+            """,
+            (user_id,),
+        ).fetchall()
+
+    return jsonify({"ok": True, "recent": [dict(x) for x in rows]})
+
+@app.get("/api/player/<int:target_id>/intel")
+def player_intel(target_id):
+    your_total = clean_num(request.args.get("your_total"))
+    with db() as con:
+        stat = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
+        spies = con.execute("SELECT * FROM spy_reports WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
+        estimates = con.execute("SELECT * FROM external_estimates WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
+        learning = con.execute("SELECT * FROM attack_learning WHERE target_id=? ORDER BY created_at DESC LIMIT 20", (target_id,)).fetchall()
+
+    return jsonify({
+        "ok": True,
+        "player": normalize_enemy_row(stat, your_total) if stat else None,
+        "spies": [dict(x) for x in spies],
+        "estimates": [dict(x) for x in estimates],
+        "learning": [dict(x) for x in learning],
+    })
 
 @app.get("/api/admin/intel-summary")
 def intel_summary():
