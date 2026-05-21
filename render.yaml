@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: enhanced-battle-stat-finder
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 8 --timeout 120
+    envVars:
+      - key: ADMIN_USER_IDS
+        value: "3679030"
+      - key: DB_PATH
+        value: "data/enhanced_battle_stats.db"
+      - key: PUBLIC_BASE_URL
+        value: "https://enhanced-battle-stat-finder.onrender.com"
