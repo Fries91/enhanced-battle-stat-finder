@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.2.4
-// @description  Smooth war target finder with one honor-bar prediction badge only, cached intel, auto-start scan, and automatic learning.
+// @version      1.2.5
+// @description  Smooth war/profile/faction prediction badges with one honor-bar badge, N/A fallback, cached intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
+// @match        https://www.torn.com/profiles.php*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -70,12 +71,21 @@
 .ebsfNameBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
 .ebsfNameBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
 
+
+#ebsfProfileMiniBadge{display:inline-flex!important;align-items:center;gap:5px;margin-left:8px;padding:3px 7px;border-radius:6px;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 11px Arial,sans-serif;vertical-align:middle;box-shadow:0 1px 5px #0009;z-index:80;position:relative}
+#ebsfProfileMiniBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
+#ebsfProfileMiniBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
+#ebsfProfileMiniBadge.good{background:#422006;color:#fde68a;border-color:#f59e0b}
+#ebsfProfileMiniBadge.difficult{background:#431407;color:#fdba74;border-color:#f97316}
+#ebsfProfileMiniBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
+#ebsfProfileMiniBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
+
     @media(max-width:760px){#ebsfPanel{width:calc(100vw - 6px);height:calc(100vh - 6px);border-radius:10px}.grid,.row,.statsBox{grid-template-columns:1fr}.target{grid-template-columns:1fr}.acts{justify-content:flex-start}}
   `);
 
   boot();
   watchAttackPage();
-  setTimeout(()=>startSmoothBadgeSystem(), 1600);
+  setTimeout(()=>{startSmoothBadgeSystem(); paintProfilePageBadge();}, 1600);
   watchGlobalAttackClicks();
 
   function boot(){
@@ -507,6 +517,7 @@
       try{
         buildBadgeNameMap();
         paintRosterNamePills();
+        paintGenericFactionNameBadges();
       } finally {
         ebsfPainting = false;
       }
@@ -605,11 +616,12 @@
 
   function clearBadgeMarkers(){
     document.querySelectorAll('.ebsfNameBadge').forEach(b=>b.remove());
-    document.querySelectorAll('[data-ebsf-badge-done], [data-ebsf-honor-badge-done], [data-ebsf-atk-badge-done], [data-ebsf-row-badge-done]').forEach(el=>{
+    document.querySelectorAll('[data-ebsf-badge-done], [data-ebsf-honor-badge-done], [data-ebsf-atk-badge-done], [data-ebsf-row-badge-done], [data-ebsf-generic-done]').forEach(el=>{
       delete el.dataset.ebsfBadgeDone;
       delete el.dataset.ebsfHonorBadgeDone;
       delete el.dataset.ebsfAtkBadgeDone;
       delete el.dataset.ebsfRowBadgeDone;
+      delete el.dataset.ebsfGenericDone;
     });
   }
 
@@ -655,6 +667,123 @@
       el.appendChild(badge);
     }catch(e){}
   }
+
+
+  function paintGenericFactionNameBadges(){
+    // For non-war faction member pages or other faction pages where we do not have a scanned roster.
+    // Very small pass: normal profile links + likely honor/name containers only. One badge per row.
+    const anchors = [...document.querySelectorAll('a[href*="profiles.php?XID="]')]
+      .filter(a => a.dataset.ebsfGenericDone !== '1')
+      .slice(0, 55);
+
+    for(const a of anchors){
+      const id = extractTargetIdFromText(a.href);
+      if(!id || (app.user && String(id) === String(app.user.user_id))) continue;
+
+      const row = a.closest('tr, li, [class*="row"], [class*="member"], [class*="user"], div') || a.parentElement;
+      if(!row || row.dataset.ebsfRowBadgeDone === '1') {
+        a.dataset.ebsfGenericDone = '1';
+        continue;
+      }
+
+      const mount = row.querySelector?.('[class*="honor"], [class*="name"], a[href*="profiles.php"]') || a;
+      if(!mount || mount.querySelector?.('.ebsfNameBadge')) {
+        a.dataset.ebsfGenericDone = '1';
+        continue;
+      }
+
+      a.dataset.ebsfGenericDone = '1';
+      row.dataset.ebsfRowBadgeDone = '1';
+
+      const intel = getCachedIntel(id);
+      const badge = makeBadge(intel); // N/A if no intel
+      badge.classList.add('ebsfHonorBadge');
+
+      attachInside(mount, badge);
+    }
+  }
+
+  async function paintProfilePageBadge(){
+    if(!location.href.includes('profiles.php')) return;
+    if(document.getElementById('ebsfProfileMiniBadge')) return;
+
+    const pid = getProfilePageId();
+    if(!pid || (app.user && String(pid) === String(app.user.user_id))) return;
+
+    const mount = findProfileBadgeMount();
+    if(!mount) return;
+
+    const badge = document.createElement('span');
+    badge.id = 'ebsfProfileMiniBadge';
+    badge.className = 'unknown';
+    badge.textContent = 'N/A';
+    badge.title = 'No Battle Stat Finder intel yet';
+
+    try{ mount.appendChild(badge); }catch(e){ return; }
+
+    const cached = getCachedIntel(pid);
+    if(cached) applyProfileBadge(badge, cached, true);
+
+    // One backend call max on profile page to refresh this one player.
+    try{
+      const yourTotal = app.total || GM_getValue(S.total, '');
+      const r = await get('/api/player/'+encodeURIComponent(pid)+'/intel?your_total='+encodeURIComponent(yourTotal));
+      const p = r.player || r.enemy || null;
+      if(p){
+        saveCachedIntel(pid, p);
+        applyProfileBadge(badge, p, false);
+      }else if(!cached){
+        badge.className = 'unknown';
+        badge.textContent = 'N/A';
+      }
+    }catch(e){}
+  }
+
+  function applyProfileBadge(badge, intel, cached){
+    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
+      badge.className = 'unknown';
+      badge.textContent = 'N/A';
+      return;
+    }
+    const label = String(intel.label || 'Unknown').toLowerCase();
+    badge.className = ['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown';
+    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
+    badge.textContent = fmtShort(val);
+    badge.title = `Battle Stat Finder${cached?' cached':''}: ${intel.label || 'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
+  }
+
+  function getProfilePageId(){
+    const id = new URL(location.href).searchParams.get('XID') || extractTargetIdFromText(location.href);
+    return id ? Number(id) : null;
+  }
+
+  function findProfileBadgeMount(){
+    // PDA top title is not directly inside the webpage, so mount inside first useful profile content.
+    const choices = [
+      document.querySelector('[class*="profile"] [class*="name"]'),
+      document.querySelector('[class*="basic"] [class*="name"]'),
+      document.querySelector('[class*="title"]'),
+      document.querySelector('h1'),
+      document.querySelector('#profile-container'),
+      document.querySelector('[class*="profile"]'),
+      document.body
+    ].filter(Boolean);
+
+    for(const el of choices){
+      const r = el.getBoundingClientRect?.();
+      if(!r || r.height === 0) continue;
+      if(el === document.body) {
+        const box = document.createElement('div');
+        box.style.cssText = 'margin:8px 10px;padding:8px;border:1px solid #334155;border-radius:10px;background:#0b1120;color:#f8fafc;font-family:Arial,sans-serif;';
+        box.innerHTML = '<b style="color:#facc15">⚔️ Battle Stat Finder</b> ';
+        document.body.prepend(box);
+        return box;
+      }
+      return el;
+    }
+    return null;
+  }
+
 
   function makeBadge(intel){
     const badge = document.createElement('span');
