@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.2.0
-// @description  Performance-focused war target finder with cached prediction badges, auto-start scan, admin intel, and automatic learning.
+// @version      1.2.2
+// @description  Smooth war target finder with fixed ID detection, quiet background scan, sticky prediction badges, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -74,7 +74,7 @@
 
   boot();
   watchAttackPage();
-  scheduleBadgePaint('boot');
+  setTimeout(()=>{loadCachedScan(); scheduleBadgePaint('lazy'); quietBackgroundStart();}, 1800);
   watchGlobalAttackClicks();
 
   function boot(){
@@ -107,7 +107,7 @@
     render();
   }
 
-  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render();}
+  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>scheduleBadgePaint('manual'), 700);}
   function close(){document.getElementById('ebsfRoot').classList.remove('open');}
   function loadCachedScan(){
     if(app.members && app.members.length) return;
@@ -125,6 +125,36 @@
     const bs=app.user.battle_stats||{};
     return `<div class="note">Logged in as <b>${esc(app.user.name)}</b> [${app.user.user_id}]<br>Faction: ${esc(app.user.faction_name||'')} [${esc(app.user.faction_id||'')}]<br>Detected effective battle stats: <b>${fmt(app.total||bs.effective_total||bs.total)}</b></div>`;
   }
+
+
+  async function quietBackgroundStart(){
+    // Starts gently in the background for logged-in users so badges appear
+    // without needing to open the overlay, but avoids repeated scans.
+    if(!location.href.includes('factions.php')) return;
+    if(!app.key || !app.user) return;
+
+    const last = Number(GM_getValue('ebsf_last_quiet_scan_ts', 0) || 0);
+    if(Date.now() - last < 1000 * 60 * 8) return;
+    GM_setValue('ebsf_last_quiet_scan_ts', Date.now());
+
+    try{
+      const r = await post('/api/war/enemy-scan',{
+        api_key:app.key,
+        your_total:app.total,
+        enemy_faction_id:app.enemyFaction || '',
+        faction_id:app.user?.faction_id
+      });
+      if(r.ok){
+        app.members = r.members || [];
+        app.enemyFaction = String(r.enemy_faction_id || app.enemyFaction || '');
+        GM_setValue(S.enemyFaction, app.enemyFaction);
+        GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
+        cacheIntelFromMembers(app.members);
+        scheduleBadgePaint('scan');
+      }
+    }catch(e){}
+  }
+
 
   function targets(){
     q('#ebsfBody').innerHTML=`
@@ -261,9 +291,9 @@
         <p class="note"><b>Enhanced Battle Stat Finder</b> starts from one login. After you click <b>Login / Save All</b>, it detects your battle stat total, switches to the target view, scans the active enemy faction when available, caches known predictions, and paints lightweight colored stat badges beside names/honor bars.</p>
         <p class="note"><b>It needs time to learn.</b> Early scans may show <b>N/A</b>, Unknown, or low-confidence targets. As your faction attacks more players, the backend learns and the badges become more useful.</p>
         <ul>
-          <li>Auto-starts after login.</li>
+          <li>Auto-starts after login without heavy page scanning.</li>
           <li>Shows sticky colored prediction badges when intel is known.</li>
-          <li>Stores known predictions locally so they stay visible on reload without repeatedly scanning the whole page.</li>
+          <li>Stores known predictions locally so they stay visible on reload, then paints badges in small background chunks.</li>
           <li>Automatically learns from attack pages without users saving results.</li>
         </ul>
       </div>
@@ -305,10 +335,17 @@
   }
   function watchGlobalAttackClicks(){
     document.addEventListener('click', (e)=>{
-      const a = e.target?.closest?.('a,button');
+      const a = e.target?.closest?.('a,button,[onclick],[data-user],[data-id]');
       if(!a) return;
-      const href = a.href || a.getAttribute('href') || '';
-      const id = extractTargetIdFromText(href) || extractTargetIdFromText(a.outerHTML || '');
+
+      const quickBlob = [a.href, a.getAttribute('href'), a.getAttribute('data-user'), a.getAttribute('data-id')].filter(Boolean).join(' ');
+      let id = extractTargetIdFromText(quickBlob);
+
+      if(!id){
+        const onclick = a.getAttribute('onclick');
+        if(onclick) id = extractTargetIdFromText(onclick);
+      }
+
       if(id && String(id) !== String(app.user?.user_id || '')){
         const name = findNearbyName(a) || 'Enemy';
         GM_setValue(S.lastAttack, JSON.stringify({id:Number(id), name, ts:Date.now()}));
@@ -318,7 +355,12 @@
 
   function extractTargetIdFromText(txt){
     if(!txt) return null;
-    const m = String(txt).match(/(?:user2ID|userID|targetID|XID)[=\\":%26]+(\\d{3,10})/i);
+    txt = String(txt);
+    let m = txt.match(/(?:user2ID|userID|targetID|XID)[=\\":%26]+(\d{3,10})/i);
+    if(m) return Number(m[1]);
+    m = txt.match(/profiles\.php\?XID=(\d{3,10})/i);
+    if(m) return Number(m[1]);
+    m = txt.match(/loader\.php\?sid=attack[^"']*?(\d{3,10})/i);
     return m ? Number(m[1]) : null;
   }
 
@@ -416,84 +458,54 @@
 
 
 
+
   let ebsfBadgePaintTimer = null;
   let ebsfLastBadgePaint = 0;
+  let ebsfBadgeWorkerRunning = false;
 
   function scheduleBadgePaint(reason){
     clearTimeout(ebsfBadgePaintTimer);
-    ebsfBadgePaintTimer = setTimeout(()=>paintCachedBadges(reason), 350);
+
+    // Never badge-scan immediately on Torn load. Wait for page to settle.
+    const delay = reason === 'scan' ? 550 : reason === 'manual' ? 900 : 1800;
+    ebsfBadgePaintTimer = setTimeout(()=>paintCachedBadges(reason), delay);
   }
 
   function paintCachedBadges(reason){
     const now = Date.now();
-    if(now - ebsfLastBadgePaint < 2500 && reason !== 'scan') return;
+    if(ebsfBadgeWorkerRunning) return;
+    if(reason !== 'scan' && now - ebsfLastBadgePaint < 9000) return;
     ebsfLastBadgePaint = now;
 
-    // Only use already-known data. No mass backend calls here.
-    // This keeps PDA/Torn pages fast.
     if(!app.members || !app.members.length) loadCachedScan();
+    if((!app.members || !app.members.length) && !hasIntelCache()) return;
 
-    paintRosterBadgesFast();
-    paintLinkedBadgesFromCache();
+    ebsfBadgeWorkerRunning = true;
+
+    runIdleTask(()=>{
+      try {
+        paintLinkedBadgesFromCacheFast();
+        paintAttackLinkBadges();
+        paintRosterBadgesBackground(reason);
+      } finally {
+        ebsfBadgeWorkerRunning = false;
+      }
+    }, 1200);
   }
 
-  function paintRosterBadgesFast(){
-    if(!app.members || !app.members.length) return;
-
-    // Limit DOM work. War pages are big and PDA is sensitive.
-    const visibleTextNodes = [...document.querySelectorAll('[class*="honor"], [class*="name"], [class*="member"], td, a[href*="profiles.php"]')]
-      .filter(el => !el.dataset.ebsfHonorBadgeDone && !el.querySelector?.('.ebsfNameBadge'))
-      .slice(0, 260);
-
-    for(const m of app.members.slice(0, 120)){
-      if(!m || !m.name) continue;
-      const target = normName(m.name);
-      if(!target) continue;
-
-      let mount = null;
-      let bestScore = -999;
-
-      for(const el of visibleTextNodes){
-        const text = normName(el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '');
-        if(!text || !text.includes(target)) continue;
-
-        const r = el.getBoundingClientRect?.();
-        if(!r || r.width < 25 || r.height < 8 || r.width > 380 || r.height > 90) continue;
-        if(r.bottom < -100 || r.top > window.innerHeight + 500) continue;
-
-        let score = 0;
-        const cls = String(el.className || '').toLowerCase();
-        if(cls.includes('honor')) score += 40;
-        if(cls.includes('name')) score += 25;
-        if(cls.includes('member')) score += 15;
-        if(text === target) score += 35;
-        score -= Math.abs(text.length - target.length) * 0.5;
-        if(score > bestScore){
-          bestScore = score;
-          mount = el;
-        }
-      }
-
-      if(!mount) continue;
-      mount.dataset.ebsfHonorBadgeDone = '1';
-
-      const intel = m.intel || getCachedIntel(m.user_id);
-      const badge = buildPredictionBadge(intel, m.user_id);
-      badge.classList.add('ebsfHonorBadge');
-
-      try{
-        const cs = getComputedStyle(mount);
-        if(cs.position === 'static') mount.style.position = 'relative';
-        mount.appendChild(badge);
-      }catch(e){}
+  function runIdleTask(fn, timeout){
+    if('requestIdleCallback' in window){
+      requestIdleCallback(()=>fn(), {timeout: timeout || 1500});
+    } else {
+      setTimeout(fn, 250);
     }
   }
 
-  function paintLinkedBadgesFromCache(){
-    // Light pass for normal profile links. Uses cache only, no network.
+  function paintLinkedBadgesFromCacheFast(){
+    // Very cheap: only normal profile links, cache-only, capped.
     const links = [...document.querySelectorAll('a[href*="profiles.php?XID="]')]
       .filter(a => a.dataset.ebsfBadgeDone !== '1')
-      .slice(0, 80);
+      .slice(0, 45);
 
     for(const a of links){
       const id = extractTargetIdFromText(a.href);
@@ -506,35 +518,152 @@
     }
   }
 
-  // Old function name kept so older calls do not break.
-  async function injectNameBadges(){
-    scheduleBadgePaint('manual');
+
+  function paintAttackLinkBadges(){
+    const links = [...document.querySelectorAll('a[href*="user2ID="], a[href*="sid=attack"]')]
+      .filter(a => a.dataset.ebsfAtkBadgeDone !== '1')
+      .slice(0, 80);
+
+    for(const a of links){
+      const id = extractTargetIdFromText(a.href || a.getAttribute('href') || a.outerHTML);
+      if(!id) continue;
+      const row = a.closest('tr, li, [class*="row"], [class*="member"], div') || a.parentElement;
+      if(!row || row.dataset.ebsfHonorBadgeDone === '1') continue;
+
+      row.dataset.ebsfHonorBadgeDone = '1';
+      a.dataset.ebsfAtkBadgeDone = '1';
+
+      const intel = getCachedIntel(id);
+      const badge = buildPredictionBadge(intel, id);
+      badge.classList.add('ebsfHonorBadge');
+
+      try{
+        const mount = row.querySelector('[class*="honor"], [class*="name"], a[href*="profiles.php"], td') || row;
+        const cs = getComputedStyle(mount);
+        if(cs.position === 'static') mount.style.position = 'relative';
+        mount.appendChild(badge);
+      }catch(e){}
+    }
   }
 
-  function collectBadgeTargets(){ return []; }
 
-  function findHonorMount(row){
-    if(!row) return null;
+  function paintRosterBadgesBackground(reason){
+    if(!app.members || !app.members.length) return;
 
-    // Prefer honor bar/name-looking elements.
+    // Only scan a narrow set of likely rows/cells, never every div/span.
+    const candidates = getLikelyNameNodes();
+    if(!candidates.length) return;
+
+    const roster = app.members
+      .filter(m => m && m.name)
+      .slice(0, 120)
+      .map(m => ({m, key:normName(m.name)}))
+      .filter(x => x.key);
+
+    let i = 0;
+    function chunk(){
+      const end = Math.min(i + 12, roster.length);
+      for(; i < end; i++){
+        const {m, key} = roster[i];
+        const mount = findBestMountFromCandidates(key, candidates);
+        if(!mount || mount.dataset.ebsfHonorBadgeDone === '1') continue;
+
+        mount.dataset.ebsfHonorBadgeDone = '1';
+        const intel = m.intel || getCachedIntel(m.user_id);
+        const badge = buildPredictionBadge(intel, m.user_id);
+        badge.classList.add('ebsfHonorBadge');
+
+        try{
+          const cs = getComputedStyle(mount);
+          if(cs.position === 'static') mount.style.position = 'relative';
+          mount.appendChild(badge);
+        }catch(e){}
+      }
+
+      if(i < roster.length){
+        setTimeout(chunk, 80);
+      }
+    }
+    chunk();
+  }
+
+  function getLikelyNameNodes(){
     const selectors = [
+      'a[href*="profiles.php?XID="]',
       '[class*="honor"]',
       '[class*="user"]',
       '[class*="name"]',
       '[class*="member"]',
-      'a[href*="profiles.php"]'
+      'tr td:first-child',
+      'li'
     ];
-    for(const s of selectors){
-      const found = row.querySelector?.(s);
-      if(found && !found.classList?.contains('ebsfNameBadge')) return found;
+
+    const arr = [];
+    const seen = new Set();
+
+    for(const sel of selectors){
+      for(const el of document.querySelectorAll(sel)){
+        if(arr.length >= 220) return arr;
+        if(seen.has(el) || el.dataset.ebsfHonorBadgeDone === '1') continue;
+        if(el.querySelector?.('.ebsfNameBadge')) continue;
+        const r = el.getBoundingClientRect?.();
+        if(!r || r.width < 25 || r.height < 8 || r.width > 420 || r.height > 95) continue;
+        if(r.bottom < -150 || r.top > window.innerHeight + 650) continue;
+        seen.add(el);
+        arr.push(el);
+      }
     }
-
-    // Faction war table: first large content cell usually holds icons + honor bar.
-    const cells = row.querySelectorAll?.('td, [class*="cell"], [class*="column"]') || [];
-    if(cells.length) return cells[0];
-
-    return row;
+    return arr;
   }
+
+  function findBestMountFromCandidates(target, candidates){
+    let best = null;
+    let bestScore = -999;
+
+    for(const el of candidates){
+      const text = normName(el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '');
+      if(!text || !text.includes(target)) continue;
+
+      const r = el.getBoundingClientRect?.();
+      if(!r) continue;
+
+      let score = 0;
+      const cls = String(el.className || '').toLowerCase();
+      if(cls.includes('honor')) score += 42;
+      if(cls.includes('name')) score += 28;
+      if(cls.includes('user')) score += 20;
+      if(cls.includes('member')) score += 16;
+      if(text === target) score += 40;
+      score -= Math.abs(text.length - target.length) * 0.35;
+      score -= Math.max(0, r.width - 240) * 0.035;
+
+      if(score > bestScore){
+        bestScore = score;
+        best = el;
+      }
+    }
+    return bestScore > 3 ? best : null;
+  }
+
+  function hasIntelCache(){
+    const c = getIntelCache();
+    return c && Object.keys(c).length > 0;
+  }
+
+  // Old names kept as safe wrappers so no old call can trigger heavy behavior.
+  async function injectNameBadges(){
+    scheduleBadgePaint('manual');
+  }
+
+  function injectHonorBadgesFromRoster(){
+    scheduleBadgePaint('manual');
+  }
+
+  function collectBadgeTargets(){
+    return [];
+  }
+
+
 
   function nodeKey(node){
     if(!node.dataset) node.dataset = {};
@@ -641,7 +770,7 @@
         cacheIntelFromMembers(app.members);
         msg('Logged in and auto-scanned: '+app.members.length+' targets.');
         render();
-        setTimeout(()=>scheduleBadgePaint('scan'), 700);
+        setTimeout(()=>scheduleBadgePaint('scan'), 900);
       } else {
         msg('Logged in. Auto-scan needs an active war or enemy faction ID: '+JSON.stringify(r.error||r));
       }
@@ -666,8 +795,8 @@
       GM_setValue(S.enemyFaction,app.enemyFaction);
       GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
       cacheIntelFromMembers(app.members);
-      msg('Scan complete: '+app.members.length+' enemies.');
-      setTimeout(()=>scheduleBadgePaint('scan'), 700);
+      msg('Scan complete: '+app.members.length+' enemies. Badges refreshing...');
+      setTimeout(()=>scheduleBadgePaint('scan'), 600);
     } else msg('Scan failed: '+JSON.stringify(r.error||r));
   }
 
