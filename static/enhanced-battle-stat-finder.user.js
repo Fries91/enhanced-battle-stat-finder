@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.0
-// @description  Honor-bar-only prediction badges using PDA row/image detection, N/A fallback, cached intel, and automatic learning.
+// @version      1.3.1
+// @description  BSP-inspired player-cell prediction badges, honor-bar-only N/A/stat display, cached intel, and stronger fight learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -1577,4 +1577,315 @@
   function safeJson(v){try{return v?JSON.parse(v):null}catch(e){return null;}}
   function num(n){n=Number(String(n||'').replace(/,/g,'')); return Number.isFinite(n)&&n>0?n:null;}
   function fmt(n){n=Number(String(n||'').replace(/,/g,'')); if(!n)return'?'; if(n>=1e12)return(n/1e12).toFixed(2)+'t'; if(n>=1e9)return(n/1e9).toFixed(2)+'b'; if(n>=1e6)return(n/1e6).toFixed(1)+'m'; if(n>=1e3)return(n/1e3).toFixed(1)+'k'; return String(Math.round(n));}
+
+/* ===== v1.3.1 BSP-inspired hard override: one honor/name badge only ===== */
+GM_addStyle(`
+.ebsfNameBadge{display:inline-flex!important;align-items:center;justify-content:center;padding:1px 5px!important;border-radius:4px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;text-shadow:none!important;box-shadow:0 1px 4px #0009;pointer-events:none;white-space:nowrap;max-width:48px;min-width:30px;overflow:hidden}
+.ebsfHonorBadge{position:absolute!important;right:3px!important;top:2px!important;margin:0!important;z-index:70!important}
+.ebsfNameBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
+.ebsfNameBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
+.ebsfNameBadge.good{background:#422006;color:#fde68a;border-color:#f59e0b}
+.ebsfNameBadge.difficult{background:#431407;color:#fdba74;border-color:#f97316}
+.ebsfNameBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
+.ebsfNameBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
+#ebsfProfileFixedBadge,#ebsfProfileMiniBadge{display:none!important}
+`);
+
+function ebsfUser(){
+  return safeJson(GM_getValue(S.user, null)) || app.user || null;
+}
+function ebsfTotal(){
+  return GM_getValue(S.total, '') || app.total || '';
+}
+function ebsfCache(){
+  return safeJson(GM_getValue(S.intelCache || 'ebsf_intel_cache', '{}')) || {};
+}
+function ebsfSaveCache(c){
+  GM_setValue(S.intelCache || 'ebsf_intel_cache', JSON.stringify(c || {}));
+}
+function ebsfGetCached(id){
+  const row = ebsfCache()[String(id)];
+  if(!row || !row.intel) return null;
+  return row.intel;
+}
+function ebsfSaveCached(id,intel){
+  if(!id || !intel) return;
+  const c=ebsfCache();
+  c[String(id)]={intel,ts:Date.now()};
+  ebsfSaveCache(c);
+}
+function ebsfLastScanMembers(){
+  const x=safeJson(GM_getValue(S.lastScan || 'ebsf_last_scan_payload', null));
+  return (x && Array.isArray(x.members)) ? x.members : [];
+}
+function ebsfRosterMap(){
+  const map={};
+  for(const m of ebsfLastScanMembers()){
+    if(!m) continue;
+    const id=m.user_id || m.id;
+    const intel=m.intel || (id ? ebsfGetCached(id) : null);
+    if(id && intel) map['id:'+id]=intel;
+    const n=normName(m.name || '');
+    if(n) map['name:'+n]={id,intel};
+  }
+  return map;
+}
+function ebsfBadge(intel){
+  const b=document.createElement('span');
+  ebsfUpdateBadge(b,intel);
+  return b;
+}
+function ebsfUpdateBadge(b,intel){
+  if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
+    b.className='ebsfNameBadge ebsfHonorBadge unknown';
+    b.textContent='N/A';
+    b.title='No Battle Stat Finder intel yet';
+    return;
+  }
+  const label=String(intel.label||'Unknown').toLowerCase();
+  const cls=['easy','fair','good','difficult','avoid'].includes(label)?label:'unknown';
+  const val=intel.best_total || intel.total || ((intel.range_low && intel.range_high)?((Number(intel.range_low)+Number(intel.range_high))/2):0);
+  b.className='ebsfNameBadge ebsfHonorBadge '+cls;
+  b.textContent=fmtShort(val);
+  b.title=`Battle Stat Finder: ${intel.label||'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
+}
+function ebsfAttach(mount,badge){
+  if(!mount) return false;
+  try{
+    if(mount.querySelector(':scope > .ebsfNameBadge')) return false;
+    const cs=getComputedStyle(mount);
+    if(cs.position==='static') mount.style.position='relative';
+    mount.appendChild(badge);
+    return true;
+  }catch(e){return false;}
+}
+function ebsfCleanupBad(){
+  document.querySelectorAll('#ebsfProfileFixedBadge,#ebsfProfileMiniBadge').forEach(x=>x.remove());
+  document.querySelectorAll('.ebsfNameBadge').forEach(b=>{
+    if(b.closest('[class*="score"],[class*="status"],[class*="attack"]')) b.remove();
+  });
+}
+function ebsfFindRows(){
+  const rows=[...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')];
+  return rows.filter(row=>{
+    if(row.dataset.ebsfRowBadgeDone==='1') return false;
+    const txt=(row.textContent||'').trim();
+    if(txt.length<3) return false;
+    const cells=row.querySelectorAll?.('td,[class*="cell"],[class*="column"]') || [];
+    const hasTable=cells.length>=3;
+    const warWords=/okay|attack|hospital|travel|jail/i.test(txt);
+    const hasVisual=!!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
+    const r=row.getBoundingClientRect?.();
+    return r && r.width>160 && r.height>12 && r.top<window.innerHeight+900 && r.bottom>-150 && ((hasTable&&(warWords||hasVisual))||(warWords&&hasVisual));
+  }).slice(0,120);
+}
+function ebsfMemberCell(row){
+  const cells=[...(row.querySelectorAll?.('td,[class*="cell"],[class*="column"]')||[])];
+  for(const c of cells.slice(0,2)){
+    const txt=(c.textContent||'').trim();
+    if(/score|status|attack|okay|hospital|travel|jail/i.test(txt) && txt.length<50) continue;
+    const r=c.getBoundingClientRect?.();
+    if(r && r.width>50 && r.height>10) return c;
+  }
+  // div row fallback: first child with image/name-ish content
+  for(const c of [...row.children].slice(0,4)){
+    const r=c.getBoundingClientRect?.();
+    if(!r || r.width<50 || r.height<10) continue;
+    if(c.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]')) return c;
+  }
+  return null;
+}
+function ebsfMountInCell(cell){
+  if(!cell) return null;
+  const cand=[...(cell.querySelectorAll?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]')||[])];
+  let best=null, score=-999;
+  for(const el of cand){
+    if(el.closest?.('[class*="score"],[class*="status"],[class*="attack"]')) continue;
+    const r=el.getBoundingClientRect?.();
+    if(!r || r.width<30 || r.height<8 || r.width>360 || r.height>95) continue;
+    const cls=String(el.className||'').toLowerCase();
+    const st=String(el.getAttribute('style')||'').toLowerCase();
+    let s=0;
+    if(cls.includes('honor')) s+=50;
+    if(cls.includes('name')) s+=30;
+    if(st.includes('background-image')) s+=25;
+    if(el.tagName==='IMG') s+=22;
+    if(el.href && el.href.includes('profiles.php')) s+=20;
+    s+=Math.min(35,r.width/8);
+    if(s>score){score=s; best=el;}
+  }
+  if(best && best.parentElement){
+    const pr=best.parentElement.getBoundingClientRect?.(), br=best.getBoundingClientRect?.();
+    if(pr && br && pr.width>=br.width && pr.width<380 && pr.height<110) return best.parentElement;
+  }
+  return best || cell;
+}
+function ebsfIntelFrom(row,cell,mount,map){
+  const blob=[row.innerHTML,cell?.innerHTML,mount?.innerHTML].filter(Boolean).join(' ');
+  const id=extractTargetIdFromText(blob);
+  if(id){
+    const cached=ebsfGetCached(id);
+    if(cached) return cached;
+  }
+  const t=normName((mount?.textContent||cell?.textContent||row.textContent||'').trim());
+  if(t){
+    for(const k of Object.keys(map)){
+      if(!k.startsWith('name:')) continue;
+      const nm=k.slice(5);
+      if(nm && t.includes(nm)){
+        const v=map[k];
+        if(v && v.intel) return v.intel;
+      }
+    }
+  }
+  return null;
+}
+function ebsfPaintWarRows(){
+  const map=ebsfRosterMap();
+  for(const row of ebsfFindRows()){
+    const cell=ebsfMemberCell(row);
+    const mount=ebsfMountInCell(cell);
+    if(!mount || mount.querySelector?.(':scope > .ebsfNameBadge')){
+      row.dataset.ebsfRowBadgeDone='1';
+      continue;
+    }
+    const intel=ebsfIntelFrom(row,cell,mount,map);
+    if(ebsfAttach(mount, ebsfBadge(intel))) row.dataset.ebsfRowBadgeDone='1';
+  }
+}
+function ebsfProfileLike(){
+  const body=(document.body?.innerText||'').slice(0,4000);
+  return location.href.includes('profiles.php') || /'s Profile|Profile/i.test(document.title||'') || /User Information|Medals|Awards|Actions/i.test(body);
+}
+function ebsfProfileMount(){
+  const all=[...document.querySelectorAll('img,[style*="background-image"],[class*="honor"],[class*="name"]')];
+  let best=null,score=-999;
+  for(const el of all){
+    if(el.closest?.('#ebsfRoot,[class*="status"],[class*="score"],[class*="attack"]')) continue;
+    const r=el.getBoundingClientRect?.();
+    if(!r || r.width<90 || r.height<10 || r.width>600 || r.height>120) continue;
+    if(r.top<150 || r.top>window.innerHeight+900) continue;
+    const cls=String(el.className||'').toLowerCase(), st=String(el.getAttribute('style')||'').toLowerCase();
+    let s=0;
+    if(cls.includes('honor')) s+=50;
+    if(cls.includes('name')) s+=25;
+    if(st.includes('background-image')) s+=25;
+    if(el.tagName==='IMG') s+=22;
+    s+=Math.min(45,r.width/10);
+    if(s>score){score=s;best=el;}
+  }
+  if(best && best.parentElement){
+    const pr=best.parentElement.getBoundingClientRect?.(), br=best.getBoundingClientRect?.();
+    if(pr && br && pr.width>=br.width && pr.width<650 && pr.height<150) return best.parentElement;
+  }
+  return best;
+}
+function ebsfProfileId(){
+  const urlId=new URL(location.href).searchParams.get('XID');
+  if(urlId) return Number(urlId);
+  for(const a of document.querySelectorAll('a[href*="XID="],a[href*="user2ID="],a[href*="sid=attack"]')){
+    const id=extractTargetIdFromText(a.href || a.getAttribute('href') || a.outerHTML || '');
+    if(id && (!ebsfUser() || String(id)!==String(ebsfUser().user_id))) return id;
+  }
+  return null;
+}
+function ebsfPaintProfile(){
+  if(!ebsfProfileLike()) return;
+  if(document.querySelector('.ebsfProfileHonorDone')) return;
+  const mount=ebsfProfileMount();
+  if(!mount || mount.querySelector?.(':scope > .ebsfNameBadge')) return;
+  const pid=ebsfProfileId();
+  const badge=ebsfBadge(pid ? ebsfGetCached(pid) : null);
+  badge.classList.add('ebsfProfileHonorDone');
+  if(ebsfAttach(mount,badge) && pid){
+    setTimeout(async()=>{
+      try{
+        const r=await get('/api/player/'+encodeURIComponent(pid)+'/intel?your_total='+encodeURIComponent(ebsfTotal()));
+        const p=r.player||r.enemy||null;
+        if(p){ ebsfSaveCached(pid,p); ebsfUpdateBadge(badge,p); }
+      }catch(e){}
+    },700);
+  }
+}
+function paintHonorBadgesOnly(){
+  ebsfCleanupBad();
+  ebsfPaintWarRows();
+  ebsfPaintProfile();
+}
+function paintAlwaysVisibleBadges(){paintHonorBadgesOnly();}
+function paintProfileFixedBadge(){return;}
+async function paintProfilePageBadge(){ebsfPaintProfile();}
+function paintFactionRowsAlways(){paintHonorBadgesOnly();}
+function paintGenericFactionNameBadges(){return;}
+function paintProfileAndAttackAnchors(){return;}
+function makeBadge(intel){return ebsfBadge(intel);}
+
+// Stronger fight tracker override.
+function ebsfRememberTarget(id,name){
+  id=Number(id);
+  if(!id || (ebsfUser() && String(id)===String(ebsfUser().user_id))) return;
+  const row={id,name:name||'Enemy',ts:Date.now(),url:location.href};
+  GM_setValue(S.lastAttack || 'ebsf_last_attack_id', JSON.stringify(row));
+  GM_setValue(S.lastTarget || 'ebsf_last_target_id', JSON.stringify(row));
+}
+function ebsfReadTarget(){
+  for(const key of [S.lastAttack||'ebsf_last_attack_id',S.lastTarget||'ebsf_last_target_id']){
+    const x=safeJson(GM_getValue(key,null));
+    if(x&&x.id&&Date.now()-(x.ts||0)<1000*60*45) return x;
+  }
+  return null;
+}
+document.addEventListener('click',e=>{
+  const el=e.target?.closest?.('a,button,[onclick],[data-user],[data-id],[data-xid]');
+  if(!el) return;
+  const blob=[el.href,el.getAttribute('href'),el.getAttribute('onclick'),el.getAttribute('data-user'),el.getAttribute('data-id'),el.getAttribute('data-xid'),el.outerHTML].filter(Boolean).join(' ');
+  let id=extractTargetIdFromText(blob);
+  if(!id && ebsfProfileLike()) id=ebsfProfileId();
+  if(id && /attack|user2ID|sid=attack|target/i.test(blob + ' ' + location.href)) ebsfRememberTarget(id, (el.textContent||document.title||'Enemy').trim().slice(0,40));
+},true);
+async function ebsfSaveFightResult(){
+  if(!location.href.includes('sid=attack')) return;
+  const saved=ebsfReadTarget();
+  const text=(document.body?.innerText||'').toLowerCase();
+  if(!saved || !saved.id || !text) return;
+  const won=/you won|you have won|mugged|hospitalized|left them|you defeated|victory/.test(text);
+  const lost=/you lost|you were defeated|defeated by|you have lost|stalemate|you ran away|you were hospitalized/.test(text);
+  if(!won && !lost) return;
+  const key='ebsf_learn_'+saved.id+'_'+(won?'w':'l')+'_'+Math.floor((saved.ts||Date.now())/1000);
+  if(GM_getValue(key,'')) return;
+  GM_setValue(key,'1');
+  const user=ebsfUser();
+  if(!user || !user.user_id) return;
+  const result=won?'generic_win':'generic_loss';
+  const payload={
+    attacker_id:user.user_id,
+    attacker_name:user.name,
+    attacker_total:ebsfTotal(),
+    target_id:saved.id,
+    target_name:saved.name,
+    result,
+    confidence_weight:1,
+    detected_confidence:65,
+    result_source:'auto_v131',
+    fight_meta:{url:location.href, result:won?'win':'loss'}
+  };
+  try{
+    const r=await post('/api/attack/result',payload);
+    if(r.ok){
+      const intel=await get('/api/player/'+encodeURIComponent(saved.id)+'/intel?your_total='+encodeURIComponent(ebsfTotal()));
+      const p=intel.player||intel.enemy||null;
+      if(p) ebsfSaveCached(saved.id,p);
+      document.querySelectorAll('.ebsfNameBadge').forEach(x=>x.remove());
+      document.querySelectorAll('[data-ebsf-row-badge-done],[data-ebsf-honor-badge-done]').forEach(el=>{delete el.dataset.ebsfRowBadgeDone;delete el.dataset.ebsfHonorBadgeDone;});
+      setTimeout(paintHonorBadgesOnly,500);
+    }
+  }catch(e){}
+}
+setTimeout(paintHonorBadgesOnly,1800);
+setTimeout(paintHonorBadgesOnly,3600);
+setInterval(()=>{paintHonorBadgesOnly(); ebsfSaveFightResult();},4500);
+try{
+  new MutationObserver(()=>{clearTimeout(window.ebsfBspishTimer); window.ebsfBspishTimer=setTimeout(paintHonorBadgesOnly,700);}).observe(document.body,{childList:true,subtree:true});
+}catch(e){}
+
 })();
