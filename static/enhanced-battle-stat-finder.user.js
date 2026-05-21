@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.2.9
-// @description  Honor-bar-only prediction badges with BSP-style placement, N/A fallback, cached intel, and automatic learning.
+// @version      1.3.0
+// @description  Honor-bar-only prediction badges using PDA row/image detection, N/A fallback, cached intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -61,7 +61,7 @@
     #ebsfFightPrompt{position:fixed;left:10px;right:10px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:12px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000}
     #ebsfFightPrompt b{color:#facc15}.ebsfPromptBtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.ebsfPromptBtns button{background:#1f2937;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:8px;font-weight:800}.ebsfPromptBtns button:first-child{background:#facc15;color:#111827;border-color:#facc15}
 
-.ebsfNameBadge{display:inline-flex!important;align-items:center;justify-content:center;padding:1px 5px!important;border-radius:4px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;text-shadow:none!important;box-shadow:0 1px 4px #0009;pointer-events:none;white-space:nowrap;max-width:45px;min-width:28px;overflow:hidden}
+.ebsfNameBadge{display:inline-flex!important;align-items:center;justify-content:center;padding:1px 5px!important;border-radius:4px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;text-shadow:none!important;box-shadow:0 1px 4px #0009;pointer-events:none;white-space:nowrap;max-width:48px;min-width:30px;overflow:hidden}
 .ebsfHonorBadge{position:absolute!important;right:3px!important;top:2px!important;margin:0!important;z-index:70!important}
 .ebsfNameBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
 .ebsfNameBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
@@ -69,6 +69,7 @@
 .ebsfNameBadge.difficult{background:#431407;color:#fdba74;border-color:#f97316}
 .ebsfNameBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
 .ebsfNameBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
+#ebsfProfileFixedBadge,#ebsfProfileMiniBadge{display:none!important}
 
 
 #ebsfProfileMiniBadge{display:none!important}
@@ -92,6 +93,7 @@
   `);
 
   boot();
+  setTimeout(()=>paintHonorBadgesOnly(), 2500);
   setupStrongAttackRemembering();
   watchAttackPage();
   setTimeout(()=>{startSmoothBadgeSystem();  paintHonorBadgesOnly();}, 1300);
@@ -127,7 +129,7 @@
     render();
   }
 
-  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>{scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); paintHonorBadgesOnly(); }, 700);}
+  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>{scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); setTimeout(()=>paintHonorBadgesOnly?.(), 400); paintHonorBadgesOnly(); }, 700);}
   function close(){document.getElementById('ebsfRoot').classList.remove('open');}
   function loadCachedScan(){
     if(app.members && app.members.length) return;
@@ -172,8 +174,8 @@
         cacheIntelFromMembers(app.members);
       clearBadgeMarkers();
         clearBadgeMarkers();
-        scheduleBadgePaint('scan'); setTimeout(()=>paintHonorBadgesOnly?.(), 400);
-        setTimeout(()=>paintAlwaysVisibleBadges(), 500);
+        scheduleBadgePaint('scan'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); setTimeout(()=>paintHonorBadgesOnly?.(), 400);
+        setTimeout(()=>paintHonorBadgesOnly(), 500);
       }
     }catch(e){}
   }
@@ -463,7 +465,7 @@
 
 
 
-  function injectHonorBadgesFromRoster(){ scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); }
+  function injectHonorBadgesFromRoster(){ scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); setTimeout(()=>paintHonorBadgesOnly?.(), 400); }
 
   function buildPredictionBadge(intel, playerId){
     const badge = document.createElement('span');
@@ -572,7 +574,7 @@
             break;
           }
         }
-        if(useful){ scheduleBadgePaint('mutation'); setTimeout(()=>paintHonorBadgesOnly?.(), 500); setTimeout(()=>{paintHonorBadgesOnly(); }, 600); }
+        if(useful){ scheduleBadgePaint('mutation'); setTimeout(()=>paintHonorBadgesOnly?.(), 500); setTimeout(()=>paintHonorBadgesOnly?.(), 500); setTimeout(()=>{paintHonorBadgesOnly(); }, 600); }
       });
       ebsfBadgeObserver.observe(document.body, {childList:true, subtree:true});
     }catch(e){}
@@ -690,9 +692,7 @@
 
 
   function clearBadgeMarkers(){
-    document.querySelectorAll('.ebsfNameBadge').forEach(b=>b.remove());
-    document.getElementById('ebsfProfileFixedBadge')?.remove();
-    document.getElementById('ebsfProfileMiniBadge')?.remove();
+    document.querySelectorAll('.ebsfNameBadge,#ebsfProfileFixedBadge,#ebsfProfileMiniBadge').forEach(b=>b.remove());
     document.querySelectorAll('[data-ebsf-badge-done], [data-ebsf-honor-badge-done], [data-ebsf-atk-badge-done], [data-ebsf-row-badge-done], [data-ebsf-generic-done]').forEach(el=>{
       delete el.dataset.ebsfBadgeDone;
       delete el.dataset.ebsfHonorBadgeDone;
@@ -896,7 +896,7 @@
   // Disable old floating/profile/general badge painters.
   function paintProfileFixedBadge(){ return; }
   async function paintProfilePageBadge(){ return; }
-  function paintAlwaysVisibleBadges(){ paintHonorBadgesOnly(); }
+  function paintHonorBadgesOnly(){ paintHonorBadgesOnly(); }
 
 
   function isUsefulBadgePage(){
@@ -906,7 +906,7 @@
     return u.includes('factions.php') || u.includes('profiles.php') || /profile/i.test(title) || /faction/i.test(title) || /User Information|Medals|Awards|Interaction history|Actions/i.test(body);
   }
 
-  function paintAlwaysVisibleBadges(){
+  function paintHonorBadgesOnly(){
     if(!isUsefulBadgePage()) return;
 
     if(isProfileLikePage()){
@@ -1077,24 +1077,12 @@
 
 
   function makeBadge(intel){
-    const badge = document.createElement('span');
-    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
-      badge.className = 'ebsfNameBadge unknown';
-      badge.textContent = 'N/A';
-      badge.title = 'No Battle Stat Finder intel yet';
-      return badge;
-    }
-    const label = String(intel.label || 'Unknown').toLowerCase();
-    badge.className = 'ebsfNameBadge ' + (['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown');
-    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
-    badge.textContent = fmtShort(val);
-    badge.title = `Battle Stat Finder: ${intel.label || 'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
-    return badge;
+    return makeHonorBadge(intel);
   }
 
   // Wrappers keep old calls safe.
-  async function injectNameBadges(){ scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); }
-  function injectHonorBadgesFromRoster(){ scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); }
+  async function injectNameBadges(){ scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); setTimeout(()=>paintHonorBadgesOnly?.(), 400); }
+  function injectHonorBadgesFromRoster(){ scheduleBadgePaint('manual'); setTimeout(()=>paintHonorBadgesOnly?.(), 400); setTimeout(()=>paintHonorBadgesOnly?.(), 400); }
   function collectBadgeTargets(){ return []; }
 
 
