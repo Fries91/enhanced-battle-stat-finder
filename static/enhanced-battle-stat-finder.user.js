@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.0.8
-// @description  War enemy stat finder with clear ToS/settings, improved learning, confidence, reasons, and automatic fight detection.
+// @version      1.0.9
+// @description  War enemy stat finder organized into respect hits, best targets, and chain save hits with automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -53,7 +53,7 @@
     .ebsfTabs{display:flex;gap:6px;padding:10px;background:#0f172a;border-bottom:1px solid #334155;overflow-x:auto}.ebsfTab{white-space:nowrap;background:#111827;color:#cbd5e1;border:1px solid #334155;border-radius:999px;padding:8px 10px;font-weight:800}.ebsfTab.on{background:#facc15;color:#111827;border-color:#facc15}
     #ebsfBody{padding:12px;overflow:auto;flex:1}.grid{display:grid;grid-template-columns:330px 1fr;gap:12px}.card{background:#111827;border:1px solid #334155;border-radius:14px;padding:12px}.card h3{margin:0 0 10px;color:#facc15;font-size:14px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
     .inp,.sel,.txt{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:9px 10px}.txt{min-height:72px}.btn{background:#facc15;color:#111827;border:1px solid #facc15;border-radius:10px;padding:9px 10px;font-weight:900}.btn2{background:#1f2937;color:#f8fafc;border-color:#475569}.note{color:#94a3b8;font-size:12px;line-height:1.4}.msg{display:none;margin-top:8px;background:#1e3a8a55;border:1px solid #60a5fa66;color:#bfdbfe;border-radius:10px;padding:8px;font-size:12px}.msg.show{display:block}
-    .target{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:13px;padding:10px;margin-bottom:8px}.name{font-weight:900}.meta{color:#94a3b8;font-size:11px;margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.mini{font-size:11px;padding:6px 8px}.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;border:1px solid #475569}.easy{color:#86efac;background:#22c55e22}.fair{color:#93c5fd;background:#3b82f622}.good{color:#fde68a;background:#facc1522}.difficult{color:#fdba74;background:#f9731622}.avoid{color:#fca5a5;background:#ef444422}.unknown{color:#cbd5e1;background:#64748b22}.empty{border:1px dashed #475569;border-radius:14px;color:#94a3b8;padding:24px;text-align:center;background:#0f172a}
+    .groupTitle{display:flex;justify-content:space-between;align-items:center;background:#020617;border:1px solid #334155;border-radius:13px;padding:10px;margin:0 0 8px}.groupTitle b{color:#facc15}.groupTitle span{color:#94a3b8;font-size:11px}.target{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:13px;padding:10px;margin-bottom:8px}.name{font-weight:900}.meta{color:#94a3b8;font-size:11px;margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.mini{font-size:11px;padding:6px 8px}.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;border:1px solid #475569}.easy{color:#86efac;background:#22c55e22}.fair{color:#93c5fd;background:#3b82f622}.good{color:#fde68a;background:#facc1522}.difficult{color:#fdba74;background:#f9731622}.avoid{color:#fca5a5;background:#ef444422}.unknown{color:#cbd5e1;background:#64748b22}.empty{border:1px dashed #475569;border-radius:14px;color:#94a3b8;padding:24px;text-align:center;background:#0f172a}
     .topScanBar{background:#020617;border:1px solid #facc1566;border-radius:14px;padding:10px;margin-bottom:12px}.topScanBar .btn{width:100%;font-size:15px;padding:12px}.topScanBar .row{margin-top:8px;margin-bottom:0}#ebsfAutoToast{position:fixed;left:12px;right:12px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:10px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000;font-size:13px}#ebsfAutoToast b{color:#facc15}.infoBox{background:#020617;border:1px solid #334155;border-radius:14px;padding:12px;margin-bottom:10px}.infoBox h3{margin:0 0 8px;color:#facc15;font-size:14px}.infoBox p{margin:0 0 8px}.infoBox ul{margin:8px 0 0 18px;padding:0;color:#cbd5e1;font-size:12px;line-height:1.45}.loginBottom{margin-top:14px;border-top:1px solid #334155;padding-top:12px}.statsBox{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}.statMini{background:#020617;border:1px solid #334155;border-radius:10px;padding:8px;color:#cbd5e1;font-size:12px}.statMini b{color:#facc15}
     #ebsfFightPrompt{position:fixed;left:10px;right:10px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:12px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000}
     #ebsfFightPrompt b{color:#facc15}.ebsfPromptBtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.ebsfPromptBtns button{background:#1f2937;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:8px;font-weight:800}.ebsfPromptBtns button:first-child{background:#facc15;color:#111827;border-color:#facc15}
@@ -117,7 +117,7 @@
       <div class="grid"><div class="card"><h3>Your Setup</h3>
       ${userSummary()}
       <p class="note">Fight learning is fully automatic now. After an attack, the script reads visible fight details and saves Easy/Close/Hard results without asking.</p>
-      </div><div class="card"><h3>Targets</h3>${listTargets()}</div></div>`;
+      </div><div class="card"><h3>Organized Targets</h3>${listTargets()}</div></div>`;
     q('#scanTop').onclick=scan;
     q('#clearEnemyFaction').onclick=()=>{ q('#enemyFaction').value=''; app.enemyFaction=''; GM_setValue(S.enemyFaction,''); msg('Enemy faction cleared. Next scan will try auto-detect.'); };
     q('#ebsfBody').querySelectorAll('[data-act]').forEach(x=>x.onclick=actTarget);
@@ -125,12 +125,64 @@
 
   function listTargets(){
     if(!app.members.length) return '<div class="empty">No targets scanned yet. Login in Settings, then scan here.</div>';
-    return app.members.map(m=>{
-      const i=m.intel||{};
-      const label=i.label||'Unknown';
-      const cls=label.toLowerCase();
-      return `<div class="target"><div><div class="name">${esc(m.name)} [${m.user_id}]</div><div class="meta"><span>Lvl ${m.level||'?'}</span><span>${esc(m.status||'')}</span><span>Total ${fmt(i.best_total||i.total)}</span><span>Range ${fmt(i.range_low)}-${fmt(i.range_high)}</span><span>Conf ${Math.round(i.confidence||0)}%</span><span>${esc(i.source||'none')}</span>${i.source_detail?`<span>Reason: ${esc(i.source_detail)}</span>`:''}</div></div><div class="acts"><span class="pill ${cls}">${label}</span><button class="btn btn2 mini" data-act="profile" data-id="${m.user_id}">Profile</button><button class="btn btn2 mini" data-act="attack" data-id="${m.user_id}" data-name="${esc(m.name)}">Attack</button><button class="btn btn2 mini" data-act="spy" data-id="${m.user_id}">Spy</button><button class="btn btn2 mini" data-act="result" data-id="${m.user_id}" data-name="${esc(m.name)}">Learn</button></div></div>`;
-    }).join('');
+
+    const rows = app.members.map(m => {
+      const i = m.intel || {};
+      const best = num(i.best_total || i.total);
+      const your = num(app.total);
+      const ratio = best && your ? best / your : null;
+      const level = Number(m.level || 0);
+      const conf = Number(i.confidence || 0);
+      return {m, i, best, your, ratio, level, conf};
+    });
+
+    const known = rows.filter(x => x.ratio !== null && x.conf > 0);
+    const unknown = rows.filter(x => x.ratio === null || x.conf <= 0);
+
+    // Highest Respect Hits:
+    // Higher level targets with stats just above/near you. More risk, but better respect potential.
+    const respect = known
+      .filter(x => x.level >= 50 && x.ratio >= 0.95 && x.ratio <= 1.35)
+      .sort((a,b) => (b.level - a.level) || (Math.abs(a.ratio - 1.10) - Math.abs(b.ratio - 1.10)) || (b.conf - a.conf))
+      .slice(0, 12);
+
+    // Best Target Hits:
+    // Around the same stats, most reliable war hits.
+    const bestTargets = known
+      .filter(x => x.ratio >= 0.80 && x.ratio <= 1.15 && !respect.some(r => r.m.user_id === x.m.user_id))
+      .sort((a,b) => Math.abs(a.ratio - 0.95) - Math.abs(b.ratio - 0.95) || b.conf - a.conf)
+      .slice(0, 18);
+
+    // Chain Save Hits:
+    // Really easy targets. Great for chain saving and safe hits.
+    const chain = known
+      .filter(x => x.ratio <= 0.75 && !respect.some(r => r.m.user_id === x.m.user_id) && !bestTargets.some(r => r.m.user_id === x.m.user_id))
+      .sort((a,b) => a.ratio - b.ratio || b.conf - a.conf)
+      .slice(0, 18);
+
+    const used = new Set([...respect, ...bestTargets, ...chain].map(x => x.m.user_id));
+    const other = [...known.filter(x => !used.has(x.m.user_id)), ...unknown]
+      .sort((a,b) => (b.conf - a.conf) || (a.level - b.level))
+      .slice(0, 20);
+
+    return [
+      section('🔥 Highest Respect Hits', 'High level + just a bit above/near your stats', respect),
+      section('🎯 Best Target Hits', 'Closest reliable fights around your stats', bestTargets),
+      section('⛓️ Chain Save Hits', 'Very easy targets for safe chain saving', chain),
+      section('❔ Other / Unknown', 'Needs spy, estimate, or fight data to rank better', other)
+    ].join('');
+  }
+
+  function section(title, sub, items){
+    return `<div class="groupTitle"><div><b>${title}</b><br><span>${sub}</span></div><span>${items.length}</span></div>` +
+      (items.length ? items.map(x => targetCard(x.m, x.i, x.ratio)).join('') : '<div class="empty">No targets in this group yet.</div>');
+  }
+
+  function targetCard(m, i, ratio){
+    const label=i.label||'Unknown';
+    const cls=label.toLowerCase();
+    const ratioTxt = ratio ? `${Math.round(ratio*100)}% of you` : 'unknown';
+    return `<div class="target"><div><div class="name">${esc(m.name)} [${m.user_id}]</div><div class="meta"><span>Lvl ${m.level||'?'}</span><span>${esc(m.status||'')}</span><span>${ratioTxt}</span><span>Total ${fmt(i.best_total||i.total)}</span><span>Range ${fmt(i.range_low)}-${fmt(i.range_high)}</span><span>Conf ${Math.round(i.confidence||0)}%</span><span>${esc(i.source||'none')}</span>${i.source_detail?`<span>Reason: ${esc(i.source_detail)}</span>`:''}</div></div><div class="acts"><span class="pill ${cls}">${label}</span><button class="btn btn2 mini" data-act="profile" data-id="${m.user_id}">Profile</button><button class="btn btn2 mini" data-act="attack" data-id="${m.user_id}" data-name="${esc(m.name)}">Attack</button><button class="btn btn2 mini" data-act="spy" data-id="${m.user_id}">Spy</button><button class="btn btn2 mini" data-act="result" data-id="${m.user_id}" data-name="${esc(m.name)}">Learn</button></div></div>`;
   }
 
   function spy(){
@@ -516,5 +568,6 @@
   function q(s){return document.querySelector(s);}
   function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
   function safeJson(v){try{return v?JSON.parse(v):null}catch(e){return null;}}
+  function num(n){n=Number(String(n||'').replace(/,/g,'')); return Number.isFinite(n)&&n>0?n:null;}
   function fmt(n){n=Number(String(n||'').replace(/,/g,'')); if(!n)return'?'; if(n>=1e12)return(n/1e12).toFixed(2)+'t'; if(n>=1e9)return(n/1e9).toFixed(2)+'b'; if(n>=1e6)return(n/1e6).toFixed(1)+'m'; if(n>=1e3)return(n/1e3).toFixed(1)+'k'; return String(Math.round(n));}
 })();
