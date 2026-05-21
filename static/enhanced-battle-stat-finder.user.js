@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.1.9
-// @description  War target finder with auto-start login scan, sticky prediction badges, clean rules/API settings, admin intel, and automatic learning.
+// @version      1.2.0
+// @description  Performance-focused war target finder with cached prediction badges, auto-start scan, admin intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -74,9 +74,7 @@
 
   boot();
   watchAttackPage();
-  injectNameBadges();
-  injectHonorBadgesFromRoster();
-  setInterval(()=>{injectNameBadges(); injectHonorBadgesFromRoster();}, 5000);
+  scheduleBadgePaint('boot');
   watchGlobalAttackClicks();
 
   function boot(){
@@ -260,12 +258,12 @@
     q('#ebsfBody').innerHTML=`<div class="card">
       <div class="infoBox">
         <h3>⚔️ How This App Starts</h3>
-        <p class="note"><b>Enhanced Battle Stat Finder</b> starts from one login. After you click <b>Login / Save All</b>, it detects your battle stat total, switches to the target view, scans the active enemy faction when available, caches known predictions, and paints colored stat badges beside names/honor bars.</p>
+        <p class="note"><b>Enhanced Battle Stat Finder</b> starts from one login. After you click <b>Login / Save All</b>, it detects your battle stat total, switches to the target view, scans the active enemy faction when available, caches known predictions, and paints lightweight colored stat badges beside names/honor bars.</p>
         <p class="note"><b>It needs time to learn.</b> Early scans may show <b>N/A</b>, Unknown, or low-confidence targets. As your faction attacks more players, the backend learns and the badges become more useful.</p>
         <ul>
           <li>Auto-starts after login.</li>
           <li>Shows sticky colored prediction badges when intel is known.</li>
-          <li>Stores known predictions locally so they stay visible on reload.</li>
+          <li>Stores known predictions locally so they stay visible on reload without repeatedly scanning the whole page.</li>
           <li>Automatically learns from attack pages without users saving results.</li>
         </ul>
       </div>
@@ -335,30 +333,7 @@
 
 
 
-  function injectHonorBadgesFromRoster(){
-    // BSP-style fallback for faction war tables where honor bars may not expose profile links.
-    // Uses the enemy roster from the latest scan and matches visible honor-bar names.
-    if(!app.members || !app.members.length) loadCachedScan();
-    if(!app.members || !app.members.length) return;
-
-    for(const m of app.members){
-      if(!m || !m.name) continue;
-      const mount = findNameMountByRosterName(m.name);
-      if(!mount || mount.dataset.ebsfHonorBadgeDone === '1') continue;
-
-      mount.dataset.ebsfHonorBadgeDone = '1';
-      const intel = m.intel || {};
-      const badge = buildPredictionBadge(intel, m.user_id);
-      badge.classList.add('ebsfHonorBadge');
-
-      try{
-        const cs = getComputedStyle(mount);
-        if(cs.position === 'static') mount.style.position = 'relative';
-        mount.appendChild(badge);
-      }catch(e){}
-    }
-  }
-
+  function injectHonorBadgesFromRoster(){ scheduleBadgePaint('manual'); }
 
   function buildPredictionBadge(intel, playerId){
     const badge = document.createElement('span');
@@ -440,156 +415,103 @@
 
 
 
-  async function injectNameBadges(){
-    // Handles normal profile links AND Torn faction war tables where the honor bar/name
-    // is often not a normal profile link. Known predictions are cached so they stay visible
-    // instantly on future page loads, then refresh in the background.
-    const targets = collectBadgeTargets().slice(0, 140);
-    if(!targets.length) return;
 
-    const yourTotal = app.total || GM_getValue(S.total, '');
-    for(const t of targets){
-      if(!t.id || !t.mount || t.mount.dataset.ebsfBadgeDone === '1') continue;
-      if(app.user && String(t.id) === String(app.user.user_id)) continue;
+  let ebsfBadgePaintTimer = null;
+  let ebsfLastBadgePaint = 0;
 
-      t.mount.dataset.ebsfBadgeDone = '1';
+  function scheduleBadgePaint(reason){
+    clearTimeout(ebsfBadgePaintTimer);
+    ebsfBadgePaintTimer = setTimeout(()=>paintCachedBadges(reason), 350);
+  }
 
-      const badge = document.createElement('span');
-      badge.className = 'ebsfNameBadge unknown';
-      badge.textContent = 'N/A';
-      badge.title = 'No Battle Stat Finder intel yet';
+  function paintCachedBadges(reason){
+    const now = Date.now();
+    if(now - ebsfLastBadgePaint < 2500 && reason !== 'scan') return;
+    ebsfLastBadgePaint = now;
 
-      try {
-        if(t.mode === 'after') t.mount.insertAdjacentElement('afterend', badge);
-        else t.mount.appendChild(badge);
-      } catch(e) {
-        continue;
+    // Only use already-known data. No mass backend calls here.
+    // This keeps PDA/Torn pages fast.
+    if(!app.members || !app.members.length) loadCachedScan();
+
+    paintRosterBadgesFast();
+    paintLinkedBadgesFromCache();
+  }
+
+  function paintRosterBadgesFast(){
+    if(!app.members || !app.members.length) return;
+
+    // Limit DOM work. War pages are big and PDA is sensitive.
+    const visibleTextNodes = [...document.querySelectorAll('[class*="honor"], [class*="name"], [class*="member"], td, a[href*="profiles.php"]')]
+      .filter(el => !el.dataset.ebsfHonorBadgeDone && !el.querySelector?.('.ebsfNameBadge'))
+      .slice(0, 260);
+
+    for(const m of app.members.slice(0, 120)){
+      if(!m || !m.name) continue;
+      const target = normName(m.name);
+      if(!target) continue;
+
+      let mount = null;
+      let bestScore = -999;
+
+      for(const el of visibleTextNodes){
+        const text = normName(el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '');
+        if(!text || !text.includes(target)) continue;
+
+        const r = el.getBoundingClientRect?.();
+        if(!r || r.width < 25 || r.height < 8 || r.width > 380 || r.height > 90) continue;
+        if(r.bottom < -100 || r.top > window.innerHeight + 500) continue;
+
+        let score = 0;
+        const cls = String(el.className || '').toLowerCase();
+        if(cls.includes('honor')) score += 40;
+        if(cls.includes('name')) score += 25;
+        if(cls.includes('member')) score += 15;
+        if(text === target) score += 35;
+        score -= Math.abs(text.length - target.length) * 0.5;
+        if(score > bestScore){
+          bestScore = score;
+          mount = el;
+        }
       }
 
-      // 1) Show cached prediction immediately if known.
-      const cached = getCachedIntel(t.id);
-      if(cached){
-        applyBadgeIntel(badge, cached, true);
-      }
+      if(!mount) continue;
+      mount.dataset.ebsfHonorBadgeDone = '1';
 
-      // 2) Refresh from backend in background and update cache/badge if newer.
+      const intel = m.intel || getCachedIntel(m.user_id);
+      const badge = buildPredictionBadge(intel, m.user_id);
+      badge.classList.add('ebsfHonorBadge');
+
       try{
-        const r = await get('/api/player/'+encodeURIComponent(t.id)+'/intel?your_total='+encodeURIComponent(yourTotal));
-        const p = r.player || r.enemy || null;
-        if(!p){
-          if(!cached){
-            badge.textContent = 'N/A';
-            badge.className = 'ebsfNameBadge unknown';
-            badge.title = 'No Battle Stat Finder intel yet';
-          }
-          continue;
-        }
-        saveCachedIntel(t.id, p);
-        applyBadgeIntel(badge, p, false);
-      }catch(e){
-        // If backend fails, keep cached known badge. If no cache, keep N/A.
-        if(!cached){
-          badge.textContent = 'N/A';
-          badge.className = 'ebsfNameBadge unknown';
-        }
-      }
+        const cs = getComputedStyle(mount);
+        if(cs.position === 'static') mount.style.position = 'relative';
+        mount.appendChild(badge);
+      }catch(e){}
     }
   }
 
-  function applyBadgeIntel(badge, intel, cached){
-    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
-      badge.textContent = 'N/A';
-      badge.className = 'ebsfNameBadge unknown';
-      badge.title = 'No Battle Stat Finder intel yet';
-      return;
-    }
-    const label = (intel.label || 'Unknown').toLowerCase();
-    badge.className = 'ebsfNameBadge ' + (['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown');
-    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
-    badge.textContent = fmtShort(val);
-    badge.title = `Battle Stat Finder${cached?' cached':''}: ${intel.label || 'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
-  }
+  function paintLinkedBadgesFromCache(){
+    // Light pass for normal profile links. Uses cache only, no network.
+    const links = [...document.querySelectorAll('a[href*="profiles.php?XID="]')]
+      .filter(a => a.dataset.ebsfBadgeDone !== '1')
+      .slice(0, 80);
 
-  function getIntelCache(){
-    const c = safeJson(GM_getValue(S.intelCache, '{}')) || {};
-    return c && typeof c === 'object' ? c : {};
-  }
-
-  function saveIntelCache(c){
-    // Keep local storage from growing forever.
-    const entries = Object.entries(c).sort((a,b)=>(b[1].ts||0)-(a[1].ts||0)).slice(0, 700);
-    GM_setValue(S.intelCache, JSON.stringify(Object.fromEntries(entries)));
-  }
-
-  function getCachedIntel(id){
-    const c = getIntelCache();
-    const row = c[String(id)];
-    if(!row || !row.intel) return null;
-    // Keep known predictions around for 30 days locally.
-    if(Date.now() - (row.ts || 0) > 1000*60*60*24*30) return null;
-    return row.intel;
-  }
-
-  function saveCachedIntel(id, intel){
-    if(!id || !intel) return;
-    const c = getIntelCache();
-    c[String(id)] = {intel, ts:Date.now()};
-    saveIntelCache(c);
-  }
-
-  function cacheIntelFromMembers(members){
-    if(!members || !members.length) return;
-    const c = getIntelCache();
-    let changed = false;
-    for(const m of members){
-      if(!m || !m.user_id || !m.intel) continue;
-      const i = m.intel;
-      if(i.best_total || i.total || i.range_low || i.range_high){
-        c[String(m.user_id)] = {intel:i, ts:Date.now()};
-        changed = true;
-      }
-    }
-    if(changed) saveIntelCache(c);
-  }
-
-
-  function collectBadgeTargets(){
-    const out = [];
-    const seen = new Set();
-
-    function add(id, mount, mode){
-      id = Number(id);
-      if(!id || !mount || seen.has(id + ':' + nodeKey(mount))) return;
-      seen.add(id + ':' + nodeKey(mount));
-      out.push({id, mount, mode: mode || 'inside'});
-    }
-
-    // 1) Normal profile links.
-    [...document.querySelectorAll('a[href*="profiles.php?XID="]')].forEach(a=>{
+    for(const a of links){
       const id = extractTargetIdFromText(a.href);
-      if(id) add(id, a, 'after');
-    });
+      if(!id || (app.user && String(id) === String(app.user.user_id))) continue;
+      a.dataset.ebsfBadgeDone = '1';
 
-    // 2) Attack links/buttons often contain user2ID even when the honor bar is not linked.
-    [...document.querySelectorAll('a[href*="user2ID="], a[href*="sid=attack"], button, [onclick], [data-user], [data-id]')].forEach(el=>{
-      const blob = [el.href, el.getAttribute('href'), el.getAttribute('onclick'), el.getAttribute('data-user'), el.getAttribute('data-id'), el.outerHTML].filter(Boolean).join(' ');
-      const id = extractTargetIdFromText(blob);
-      if(!id) return;
-
-      const row = el.closest('tr, li, [class*="row"], [class*="member"], [class*="table"], div') || el.parentElement;
-      const mount = findHonorMount(row) || row || el;
-      add(id, mount, 'inside');
-    });
-
-    // 3) Torn sometimes stores profile IDs in generic data attrs.
-    [...document.querySelectorAll('[data-xid], [data-userid], [data-user-id], [data-player], [data-playerid]')].forEach(el=>{
-      const id = el.getAttribute('data-xid') || el.getAttribute('data-userid') || el.getAttribute('data-user-id') || el.getAttribute('data-player') || el.getAttribute('data-playerid');
-      const mount = findHonorMount(el.closest('tr, li, div')) || el;
-      add(id, mount, 'inside');
-    });
-
-    return out;
+      const intel = getCachedIntel(id);
+      const badge = buildPredictionBadge(intel, id);
+      try{ a.insertAdjacentElement('afterend', badge); }catch(e){}
+    }
   }
+
+  // Old function name kept so older calls do not break.
+  async function injectNameBadges(){
+    scheduleBadgePaint('manual');
+  }
+
+  function collectBadgeTargets(){ return []; }
 
   function findHonorMount(row){
     if(!row) return null;
@@ -719,7 +641,7 @@
         cacheIntelFromMembers(app.members);
         msg('Logged in and auto-scanned: '+app.members.length+' targets.');
         render();
-        setTimeout(()=>{injectNameBadges(); injectHonorBadgesFromRoster();}, 700);
+        setTimeout(()=>scheduleBadgePaint('scan'), 700);
       } else {
         msg('Logged in. Auto-scan needs an active war or enemy faction ID: '+JSON.stringify(r.error||r));
       }
@@ -745,7 +667,7 @@
       GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
       cacheIntelFromMembers(app.members);
       msg('Scan complete: '+app.members.length+' enemies.');
-      setTimeout(()=>{injectNameBadges(); injectHonorBadgesFromRoster();}, 800);
+      setTimeout(()=>scheduleBadgePaint('scan'), 700);
     } else msg('Scan failed: '+JSON.stringify(r.error||r));
   }
 
@@ -1051,6 +973,48 @@
       const p = r.player || r.enemy || null;
       if(p) saveCachedIntel(targetId, p);
     }catch(e){}
+  }
+
+
+
+  function getIntelCache(){
+    const c = safeJson(GM_getValue(S.intelCache, '{}')) || {};
+    return c && typeof c === 'object' ? c : {};
+  }
+
+  function saveIntelCache(c){
+    const entries = Object.entries(c).sort((a,b)=>(b[1].ts||0)-(a[1].ts||0)).slice(0, 700);
+    GM_setValue(S.intelCache, JSON.stringify(Object.fromEntries(entries)));
+  }
+
+  function getCachedIntel(id){
+    const c = getIntelCache();
+    const row = c[String(id)];
+    if(!row || !row.intel) return null;
+    if(Date.now() - (row.ts || 0) > 1000*60*60*24*30) return null;
+    return row.intel;
+  }
+
+  function saveCachedIntel(id, intel){
+    if(!id || !intel) return;
+    const c = getIntelCache();
+    c[String(id)] = {intel, ts:Date.now()};
+    saveIntelCache(c);
+  }
+
+  function cacheIntelFromMembers(members){
+    if(!members || !members.length) return;
+    const c = getIntelCache();
+    let changed = false;
+    for(const m of members){
+      if(!m || !m.user_id || !m.intel) continue;
+      const i = m.intel;
+      if(i.best_total || i.total || i.range_low || i.range_high){
+        c[String(m.user_id)] = {intel:i, ts:Date.now()};
+        changed = true;
+      }
+    }
+    if(changed) saveIntelCache(c);
   }
 
 
