@@ -1,12 +1,10 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.2.6
-// @description  Smooth war/profile/faction prediction badges with stronger attack tracking, immediate learning refresh, cached intel, and automatic learning.
+// @version      1.2.7
+// @description  Smooth prediction badges that always show N/A first, profile-page badge, faction member badges, cached intel, and automatic learning.
 // @author       Fries91
-// @match        https://www.torn.com/factions.php*
-// @match        https://www.torn.com/loader.php?sid=attack*
-// @match        https://www.torn.com/profiles.php*
+// @match        https://www.torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -81,13 +79,22 @@
 #ebsfProfileMiniBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
 #ebsfProfileMiniBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
 
+
+#ebsfProfileFixedBadge{position:fixed;right:10px;top:182px;z-index:999997;display:inline-flex!important;align-items:center;gap:5px;padding:4px 8px;border-radius:7px;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 11px Arial,sans-serif;box-shadow:0 2px 8px #000b;pointer-events:none}
+#ebsfProfileFixedBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
+#ebsfProfileFixedBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
+#ebsfProfileFixedBadge.good{background:#422006;color:#fde68a;border-color:#f59e0b}
+#ebsfProfileFixedBadge.difficult{background:#431407;color:#fdba74;border-color:#f97316}
+#ebsfProfileFixedBadge.avoid{background:#450a0a;color:#fca5a5;border-color:#ef4444}
+#ebsfProfileFixedBadge.unknown{background:#111827;color:#cbd5e1;border-color:#64748b}
+
     @media(max-width:760px){#ebsfPanel{width:calc(100vw - 6px);height:calc(100vh - 6px);border-radius:10px}.grid,.row,.statsBox{grid-template-columns:1fr}.target{grid-template-columns:1fr}.acts{justify-content:flex-start}}
   `);
 
   boot();
   setupStrongAttackRemembering();
   watchAttackPage();
-  setTimeout(()=>{startSmoothBadgeSystem(); paintProfilePageBadge();}, 1600);
+  setTimeout(()=>{startSmoothBadgeSystem(); paintProfilePageBadge(); paintAlwaysVisibleBadges();}, 1300);
   watchGlobalAttackClicks();
 
   function boot(){
@@ -120,7 +127,7 @@
     render();
   }
 
-  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>scheduleBadgePaint('manual'), 700);}
+  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render(); setTimeout(()=>{scheduleBadgePaint('manual'); paintAlwaysVisibleBadges();}, 700);}
   function close(){document.getElementById('ebsfRoot').classList.remove('open');}
   function loadCachedScan(){
     if(app.members && app.members.length) return;
@@ -166,6 +173,7 @@
       clearBadgeMarkers();
         clearBadgeMarkers();
         scheduleBadgePaint('scan');
+        setTimeout(()=>paintAlwaysVisibleBadges(), 500);
       }
     }catch(e){}
   }
@@ -564,7 +572,7 @@
             break;
           }
         }
-        if(useful) scheduleBadgePaint('mutation');
+        if(useful){ scheduleBadgePaint('mutation'); setTimeout(()=>paintAlwaysVisibleBadges(), 600); }
       });
       ebsfBadgeObserver.observe(document.body, {childList:true, subtree:true});
     }catch(e){}
@@ -684,6 +692,7 @@
   function clearBadgeMarkers(){
     document.querySelectorAll('.ebsfNameBadge').forEach(b=>b.remove());
     document.getElementById('ebsfProfileMiniBadge')?.remove();
+    document.getElementById('ebsfProfileFixedBadge')?.remove();
     document.querySelectorAll('[data-ebsf-badge-done], [data-ebsf-honor-badge-done], [data-ebsf-atk-badge-done], [data-ebsf-row-badge-done], [data-ebsf-generic-done]').forEach(el=>{
       delete el.dataset.ebsfBadgeDone;
       delete el.dataset.ebsfHonorBadgeDone;
@@ -770,6 +779,125 @@
       attachInside(mount, badge);
     }
   }
+
+
+  function isUsefulBadgePage(){
+    const u = location.href;
+    const title = document.title || '';
+    return u.includes('factions.php') || u.includes('profiles.php') || /profile/i.test(title) || /faction/i.test(title);
+  }
+
+  function paintAlwaysVisibleBadges(){
+    if(!isUsefulBadgePage()) return;
+
+    if(isProfileLikePage()){
+      paintProfileFixedBadge();
+    }
+
+    // Faction/war/member lists: always show a single N/A/prediction badge on visible member honor/name rows.
+    if(location.href.includes('factions.php') || /faction/i.test(document.title || '')){
+      paintFactionRowsAlways();
+    }
+  }
+
+  function isProfileLikePage(){
+    return location.href.includes('profiles.php') || /'s Profile|Profile/i.test(document.title || '');
+  }
+
+  async function paintProfileFixedBadge(){
+    if(document.getElementById('ebsfProfileFixedBadge')) return;
+
+    const badge = document.createElement('div');
+    badge.id = 'ebsfProfileFixedBadge';
+    badge.className = 'unknown';
+    badge.textContent = '⚔️ N/A';
+    badge.title = 'No Battle Stat Finder intel yet';
+    document.body.appendChild(badge);
+
+    const pid = getProfilePageId?.() || extractTargetIdFromText(location.href) || detectProfileIdFromPage();
+    if(!pid || (app.user && String(pid) === String(app.user.user_id))) return;
+
+    const cached = getCachedIntel(pid);
+    if(cached) applyFloatingBadge(badge, cached, true);
+
+    // One refresh call only for profile pages.
+    try{
+      const yourTotal = app.total || GM_getValue(S.total, '');
+      const r = await get('/api/player/'+encodeURIComponent(pid)+'/intel?your_total='+encodeURIComponent(yourTotal));
+      const p = r.player || r.enemy || null;
+      if(p){
+        saveCachedIntel(pid, p);
+        applyFloatingBadge(badge, p, false);
+      }
+    }catch(e){}
+  }
+
+  function detectProfileIdFromPage(){
+    const links = [...document.querySelectorAll('a[href*="XID="], a[href*="user2ID="], a[href*="sid=attack"]')];
+    for(const a of links){
+      const id = extractTargetIdFromText(a.href || a.getAttribute('href') || a.outerHTML || '');
+      if(id && (!app.user || String(id) !== String(app.user.user_id))) return id;
+    }
+    return null;
+  }
+
+  function applyFloatingBadge(badge, intel, cached){
+    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
+      badge.className = 'unknown';
+      badge.textContent = '⚔️ N/A';
+      return;
+    }
+    const label = String(intel.label || 'Unknown').toLowerCase();
+    badge.className = ['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown';
+    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
+    badge.textContent = `⚔️ ${fmtShort(val)}`;
+    badge.title = `Battle Stat Finder${cached?' cached':''}: ${intel.label || 'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
+  }
+
+  function paintFactionRowsAlways(){
+    // If we have no roster/intel yet, still show N/A on visible rows.
+    const rows = [...document.querySelectorAll('tr, li, [class*="member"], [class*="row"]')]
+      .filter(row => row.dataset.ebsfRowBadgeDone !== '1')
+      .slice(0, 80);
+
+    const map = getBadgeNameMap ? getBadgeNameMap() : {};
+
+    for(const row of rows){
+      const txt = (row.textContent || '').trim();
+      if(!txt || txt.length < 3) continue;
+      if(!/okay|attack|profile|member|score|status/i.test(txt) && !row.querySelector?.('a[href*="profiles.php"], a[href*="user2ID"], [class*="honor"], [class*="name"]')) continue;
+
+      const mount = row.querySelector?.('[class*="honor"], [class*="name"], a[href*="profiles.php"], td:first-child') || row;
+      if(!mount || mount.querySelector?.('.ebsfNameBadge')) {
+        row.dataset.ebsfRowBadgeDone = '1';
+        continue;
+      }
+
+      let intel = null;
+      const id = extractTargetIdFromText(row.innerHTML || '');
+      if(id) intel = getCachedIntel(id);
+
+      if(!intel){
+        const ntext = normName(txt);
+        for(const k of Object.keys(map || {})){
+          if(!k.startsWith('name:')) continue;
+          const nm = k.slice(5);
+          if(nm && ntext.includes(nm)){
+            const v = map[k];
+            intel = v && v.intel ? v.intel : null;
+            break;
+          }
+        }
+      }
+
+      const badge = makeBadge(intel); // N/A if missing
+      badge.classList.add('ebsfHonorBadge');
+
+      row.dataset.ebsfRowBadgeDone = '1';
+      attachInside(mount, badge);
+    }
+  }
+
 
   async function paintProfilePageBadge(){
     if(!location.href.includes('profiles.php')) return;
