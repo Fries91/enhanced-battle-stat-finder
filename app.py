@@ -8,7 +8,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder"
+APP_NAME = "Enhanced Battle Stat Finder v1.0.7"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {
     int(x.strip())
@@ -121,6 +121,9 @@ def init_db():
                 result TEXT,
                 confidence_weight REAL DEFAULT 1,
                 note TEXT,
+                fight_meta TEXT,
+                detected_confidence REAL DEFAULT 50,
+                result_source TEXT,
                 created_at INTEGER
             );
 
@@ -133,6 +136,17 @@ def init_db():
             );
             """
         )
+
+        # Lightweight migrations for existing Render SQLite databases.
+        existing_cols = {row["name"] for row in con.execute("PRAGMA table_info(attack_learning)").fetchall()}
+        migrations = {
+            "fight_meta": "ALTER TABLE attack_learning ADD COLUMN fight_meta TEXT",
+            "detected_confidence": "ALTER TABLE attack_learning ADD COLUMN detected_confidence REAL DEFAULT 50",
+            "result_source": "ALTER TABLE attack_learning ADD COLUMN result_source TEXT",
+        }
+        for col, sql in migrations.items():
+            if col not in existing_cols:
+                con.execute(sql)
 
 
 init_db()
@@ -692,8 +706,8 @@ def attack_result():
         con.execute(
             """
             INSERT INTO attack_learning
-            (attacker_id, attacker_name, attacker_total, target_id, target_name, result, confidence_weight, note, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (attacker_id, attacker_name, attacker_total, target_id, target_name, result, confidence_weight, note, fight_meta, detected_confidence, result_source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 attacker_id,
@@ -704,6 +718,9 @@ def attack_result():
                 result,
                 float(body.get("confidence_weight") or 1),
                 body.get("note"),
+                json.dumps(body.get("fight_meta") or {}, separators=(",", ":")),
+                float(body.get("detected_confidence") or 50),
+                body.get("result_source") or "auto",
                 now_ts(),
             ),
         )
