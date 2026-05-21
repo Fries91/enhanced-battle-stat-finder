@@ -8,7 +8,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder v1.3.1"
+APP_NAME = "Enhanced Battle Stat Finder v1.3.2"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {
     int(x.strip())
@@ -814,6 +814,16 @@ def enemy_intel(target_id):
         "learning": [dict(x) for x in learning],
     })
 
+
+@app.get("/api/learning/last/<int:target_id>")
+def learning_last(target_id):
+    with db() as con:
+        rows = con.execute(
+            "SELECT * FROM attack_learning WHERE target_id=? ORDER BY created_at DESC LIMIT 5",
+            (target_id,),
+        ).fetchall()
+        stat = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
+    return jsonify({"ok": True, "rows": [dict(x) for x in rows], "stat": dict(stat) if stat else None})
 
 @app.get("/api/learning/recent")
 def recent_learning():
