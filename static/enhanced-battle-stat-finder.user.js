@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.4
-// @description  Honor-bar prediction badges with instant post-fight visible estimates, FF base intel, cached intel, N/A fallback, and automatic learning.
+// @version      1.3.5
+// @description  Honor-bar prediction badges with BSP/FF visible estimate bridge, FF base intel, cached intel, N/A fallback, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -2076,5 +2076,181 @@ setInterval(()=>{paintHonorBadgesOnly(); ebsfSaveFightResult();},4500);
 try{
   new MutationObserver(()=>{clearTimeout(window.ebsfBspishTimer); window.ebsfBspishTimer=setTimeout(paintHonorBadgesOnly,700);}).observe(document.body,{childList:true,subtree:true});
 }catch(e){}
+
+
+
+  // v1.3.5 bridge: read estimates already visible/cached from BSP/FF style scripts.
+  // This does not copy their look. It only uses the visible/cached number as base intel for our badge.
+  function bsfParseStatTextToNumber(input){
+    if(input == null) return 0;
+    let s = String(input).trim().toLowerCase().replace(/,/g,'');
+    const m = s.match(/([0-9]+(?:\.[0-9]+)?)\s*([kmbt])?/i);
+    if(!m) return 0;
+    let n = Number(m[1]);
+    const unit = (m[2] || '').toLowerCase();
+    if(unit === 'k') n *= 1e3;
+    if(unit === 'm') n *= 1e6;
+    if(unit === 'b') n *= 1e9;
+    if(unit === 't') n *= 1e12;
+    return Math.round(n);
+  }
+
+  function bsfLabelForTotal(total){
+    const mine = Number(String(app.total || GM_getValue(S.total, '') || '').replace(/,/g,''));
+    if(!mine || !total) return 'Unknown';
+    const r = total / mine;
+    if(r <= 0.75) return 'Easy';
+    if(r <= 1.10) return 'Fair';
+    if(r <= 1.35) return 'Good';
+    if(r <= 1.75) return 'Difficult';
+    return 'Avoid';
+  }
+
+  function bsfIntelFromTotal(total, source, detail, confidence){
+    total = Number(total || 0);
+    if(!total) return null;
+    return {
+      total,
+      best_total: total,
+      range_low: Math.round(total * 0.88),
+      range_high: Math.round(total * 1.12),
+      label: bsfLabelForTotal(total),
+      confidence: confidence || 62,
+      source: source || 'third_party_visible',
+      source_detail: detail || 'visible/cached third-party estimate'
+    };
+  }
+
+  function bsfGetBspCacheIntel(targetId){
+    if(!targetId) return null;
+    try{
+      const raw = localStorage.getItem('tdup.battleStatsPredictor.cache.prediction.' + targetId);
+      if(!raw) return null;
+      const p = JSON.parse(raw);
+      const total = bsfParseStatTextToNumber(p.TBS || p.TargetTBS || p.total || p.Total || p.bs_estimate || p.estimate);
+      if(!total) return null;
+      return bsfIntelFromTotal(total, 'bsp_cache', 'BSP local cached prediction', 64);
+    }catch(e){
+      return null;
+    }
+  }
+
+  function bsfGetVisibleEstimateIntel(){
+    const txt = (document.body?.innerText || '').replace(/\s+/g,' ');
+    // Handles: "Est. Stats: 246m", "Est. Stats: 3.6m", and similar visible FF/BSP text.
+    const patterns = [
+      /Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i,
+      /Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i,
+      /Stats:\s*([0-9.,]+\s*[kmbt]?)/i
+    ];
+    for(const p of patterns){
+      const m = txt.match(p);
+      if(m){
+        const total = bsfParseStatTextToNumber(m[1]);
+        if(total) return bsfIntelFromTotal(total, 'visible_ff_bsp', 'visible FF/BSP estimate on page', 62);
+      }
+    }
+    return null;
+  }
+
+  function bsfFindIdFromContext(row, mount){
+    const blob = [
+      location.href,
+      row?.innerHTML,
+      mount?.innerHTML,
+      row?.textContent,
+      mount?.textContent
+    ].filter(Boolean).join(' ');
+    return extractTargetIdFromText(blob) || getProfilePageId?.() || detectProfileIdFromPage?.() || findProfileIdFromPageLinks?.();
+  }
+
+  // Override row intel lookup so our badge can use BSP local cache too.
+  function findIntelForMemberRow(row, cell, mount, map){
+    const id = bsfFindIdFromContext(row, mount);
+    if(id){
+      const own = getCachedIntel(id);
+      if(own) return own;
+      const bsp = bsfGetBspCacheIntel(id);
+      if(bsp){
+        saveCachedIntel(id, bsp);
+        return bsp;
+      }
+    }
+
+    const text = normName((mount?.textContent || cell?.textContent || row?.textContent || '').trim());
+    if(text && map){
+      for(const k of Object.keys(map || {})){
+        if(!k.startsWith('name:')) continue;
+        const name = k.slice(5);
+        if(name && text.includes(name)){
+          const v = map[k];
+          if(v && v.intel) return v.intel;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Override profile badge pass: use our cache, BSP cache, then visible FF/BSP text.
+  function paintProfileHonorImageBadge(){
+    if(!isProfileLikeForBadge?.()) return;
+    if(document.querySelector('.ebsfProfileHonorDone')) {
+      bsfBridgeVisibleEstimateToExistingBadge();
+      return;
+    }
+
+    const mount = findProfileHonorImageMount?.();
+    if(!mount || mount.querySelector?.(':scope > .ebsfNameBadge')) return;
+
+    const pid = bsfFindIdFromContext(document.body, mount);
+    let intel = pid ? (getCachedIntel(pid) || bsfGetBspCacheIntel(pid)) : null;
+    if(!intel) intel = bsfGetVisibleEstimateIntel();
+
+    const badge = makeHonorBadge(intel);
+    badge.classList.add('ebsfProfileHonorDone');
+    attachBadgeToHonor(mount, badge);
+
+    if(pid && intel) saveCachedIntel(pid, intel);
+
+    if(pid){
+      setTimeout(async ()=>{
+        try{
+          const yourTotal = app.total || GM_getValue(S.total, '');
+          const r = await get('/api/player/'+encodeURIComponent(pid)+'/intel?your_total='+encodeURIComponent(yourTotal));
+          const p = r.player || r.enemy || null;
+          if(p){
+            saveCachedIntel(pid, p);
+            updateHonorBadge(badge, p);
+          }else{
+            const bsp = bsfGetBspCacheIntel(pid) || bsfGetVisibleEstimateIntel();
+            if(bsp){
+              saveCachedIntel(pid, bsp);
+              updateHonorBadge(badge, bsp);
+            }
+          }
+        }catch(e){
+          const bsp = bsfGetBspCacheIntel(pid) || bsfGetVisibleEstimateIntel();
+          if(bsp){
+            saveCachedIntel(pid, bsp);
+            updateHonorBadge(badge, bsp);
+          }
+        }
+      }, 700);
+    }
+  }
+
+  function bsfBridgeVisibleEstimateToExistingBadge(){
+    const badge = document.querySelector('.ebsfProfileHonorDone');
+    if(!badge) return;
+    const pid = bsfFindIdFromContext(document.body, badge);
+    const intel = (pid ? (getCachedIntel(pid) || bsfGetBspCacheIntel(pid)) : null) || bsfGetVisibleEstimateIntel();
+    if(intel){
+      if(pid) saveCachedIntel(pid, intel);
+      updateHonorBadge(badge, intel);
+    }
+  }
+
+  setTimeout(()=>{ bsfBridgeVisibleEstimateToExistingBadge(); paintHonorBadgesOnly?.(); }, 1200);
+  setTimeout(()=>{ bsfBridgeVisibleEstimateToExistingBadge(); paintHonorBadgesOnly?.(); }, 3000);
 
 })();
