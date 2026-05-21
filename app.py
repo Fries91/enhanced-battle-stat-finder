@@ -8,7 +8,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder v1.3.5"
+APP_NAME = "Enhanced Battle Stat Finder v1.3.6"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {
     int(x.strip())
