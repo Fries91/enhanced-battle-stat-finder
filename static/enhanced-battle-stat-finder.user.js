@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.0.9
-// @description  War enemy stat finder organized into respect hits, best targets, and chain save hits with automatic learning.
+// @version      1.1.1
+// @description  Global player stat intel with war targets, profile predictions, admin intel, and automatic fight learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
+// @match        https://www.torn.com/profiles.php*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -28,7 +29,8 @@
     tornstats: 'ebsf_tornstats_key',
     yata: 'ebsf_yata_key',
     lastAttack: 'ebsf_last_attack_id',
-    lastPrompted: 'ebsf_last_auto_learned_attack'
+    lastPrompted: 'ebsf_last_auto_learned_attack',
+    lastScan: 'ebsf_last_scan_payload'
   };
 
   let app = {
@@ -53,7 +55,7 @@
     .ebsfTabs{display:flex;gap:6px;padding:10px;background:#0f172a;border-bottom:1px solid #334155;overflow-x:auto}.ebsfTab{white-space:nowrap;background:#111827;color:#cbd5e1;border:1px solid #334155;border-radius:999px;padding:8px 10px;font-weight:800}.ebsfTab.on{background:#facc15;color:#111827;border-color:#facc15}
     #ebsfBody{padding:12px;overflow:auto;flex:1}.grid{display:grid;grid-template-columns:330px 1fr;gap:12px}.card{background:#111827;border:1px solid #334155;border-radius:14px;padding:12px}.card h3{margin:0 0 10px;color:#facc15;font-size:14px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
     .inp,.sel,.txt{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:9px 10px}.txt{min-height:72px}.btn{background:#facc15;color:#111827;border:1px solid #facc15;border-radius:10px;padding:9px 10px;font-weight:900}.btn2{background:#1f2937;color:#f8fafc;border-color:#475569}.note{color:#94a3b8;font-size:12px;line-height:1.4}.msg{display:none;margin-top:8px;background:#1e3a8a55;border:1px solid #60a5fa66;color:#bfdbfe;border-radius:10px;padding:8px;font-size:12px}.msg.show{display:block}
-    .groupTitle{display:flex;justify-content:space-between;align-items:center;background:#020617;border:1px solid #334155;border-radius:13px;padding:10px;margin:0 0 8px}.groupTitle b{color:#facc15}.groupTitle span{color:#94a3b8;font-size:11px}.target{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:13px;padding:10px;margin-bottom:8px}.name{font-weight:900}.meta{color:#94a3b8;font-size:11px;margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.mini{font-size:11px;padding:6px 8px}.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;border:1px solid #475569}.easy{color:#86efac;background:#22c55e22}.fair{color:#93c5fd;background:#3b82f622}.good{color:#fde68a;background:#facc1522}.difficult{color:#fdba74;background:#f9731622}.avoid{color:#fca5a5;background:#ef444422}.unknown{color:#cbd5e1;background:#64748b22}.empty{border:1px dashed #475569;border-radius:14px;color:#94a3b8;padding:24px;text-align:center;background:#0f172a}
+    .groupTitle{display:flex;justify-content:space-between;align-items:center;background:#020617;border:1px solid #334155;border-radius:13px;padding:10px;margin:0 0 8px}.groupTitle b{color:#facc15}.groupTitle span{color:#94a3b8;font-size:11px}#ebsfProfileIntel{margin:10px 0;padding:10px;border:1px solid #facc1566;border-radius:12px;background:#0b1120;color:#f8fafc;font-family:Arial,sans-serif}#ebsfProfileIntel b{color:#facc15}#ebsfProfileIntel .line{color:#cbd5e1;font-size:12px;margin-top:4px}#ebsfProfileIntel button{margin-top:8px;background:#facc15;color:#111827;border:1px solid #facc15;border-radius:10px;padding:7px 9px;font-weight:800}.scorePills{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.scorePill{font-size:11px;border:1px solid #334155;border-radius:999px;padding:4px 7px;background:#020617;color:#cbd5e1}.scorePill b{color:#facc15}.warn{color:#fbbf24}.topPick{border:1px solid #facc15;background:#1f2937;margin-bottom:10px}.adminTable{width:100%;border-collapse:collapse;font-size:12px}.adminTable th,.adminTable td{border-bottom:1px solid #334155;padding:7px;text-align:left}.adminTable th{color:#facc15}.smallBtn{font-size:11px;padding:6px 8px}.target{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:13px;padding:10px;margin-bottom:8px}.name{font-weight:900}.meta{color:#94a3b8;font-size:11px;margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.mini{font-size:11px;padding:6px 8px}.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;border:1px solid #475569}.easy{color:#86efac;background:#22c55e22}.fair{color:#93c5fd;background:#3b82f622}.good{color:#fde68a;background:#facc1522}.difficult{color:#fdba74;background:#f9731622}.avoid{color:#fca5a5;background:#ef444422}.unknown{color:#cbd5e1;background:#64748b22}.empty{border:1px dashed #475569;border-radius:14px;color:#94a3b8;padding:24px;text-align:center;background:#0f172a}
     .topScanBar{background:#020617;border:1px solid #facc1566;border-radius:14px;padding:10px;margin-bottom:12px}.topScanBar .btn{width:100%;font-size:15px;padding:12px}.topScanBar .row{margin-top:8px;margin-bottom:0}#ebsfAutoToast{position:fixed;left:12px;right:12px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:10px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000;font-size:13px}#ebsfAutoToast b{color:#facc15}.infoBox{background:#020617;border:1px solid #334155;border-radius:14px;padding:12px;margin-bottom:10px}.infoBox h3{margin:0 0 8px;color:#facc15;font-size:14px}.infoBox p{margin:0 0 8px}.infoBox ul{margin:8px 0 0 18px;padding:0;color:#cbd5e1;font-size:12px;line-height:1.45}.loginBottom{margin-top:14px;border-top:1px solid #334155;padding-top:12px}.statsBox{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}.statMini{background:#020617;border:1px solid #334155;border-radius:10px;padding:8px;color:#cbd5e1;font-size:12px}.statMini b{color:#facc15}
     #ebsfFightPrompt{position:fixed;left:10px;right:10px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:12px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000}
     #ebsfFightPrompt b{color:#facc15}.ebsfPromptBtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.ebsfPromptBtns button{background:#1f2937;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:8px;font-weight:800}.ebsfPromptBtns button:first-child{background:#facc15;color:#111827;border-color:#facc15}
@@ -62,6 +64,8 @@
 
   boot();
   watchAttackPage();
+  watchGlobalAttackClicks();
+  injectProfileIntel();
 
   function boot(){
     const b=document.createElement('button');
@@ -73,13 +77,13 @@
     r.innerHTML=`
       <div id="ebsfPanel">
         <div class="ebsfHead">
-          <div><b>⚔️ Enhanced Battle Stat Finder</b><small>confidence • reasons • auto learning</small></div>
+          <div><b>⚔️ Enhanced Battle Stat Finder</b><small>global intel • auto learning</small></div>
           <button class="ebsfClose">Close</button>
         </div>
         <div class="ebsfTabs">
           <button class="ebsfTab on" data-tab="targets">Targets</button>
           <button class="ebsfTab" data-tab="spy">Spy / Estimate</button>
-          <button class="ebsfTab" data-tab="settings">Settings / Login</button>
+          <button class="ebsfTab" data-tab="settings">Settings / Login</button><button class="ebsfTab" data-tab="admin">Admin / Intel</button>
         </div>
         <div id="ebsfBody"></div>
       </div>`;
@@ -93,10 +97,18 @@
     render();
   }
 
-  function open(){document.getElementById('ebsfRoot').classList.add('open'); render();}
+  function open(){loadCachedScan(); document.getElementById('ebsfRoot').classList.add('open'); render();}
   function close(){document.getElementById('ebsfRoot').classList.remove('open');}
+  function loadCachedScan(){
+    if(app.members && app.members.length) return;
+    const cached = safeJson(GM_getValue(S.lastScan, null));
+    if(cached && cached.members && Date.now() - cached.ts < 1000*60*60*3){
+      app.members = cached.members;
+      app.enemyFaction = cached.enemyFaction || app.enemyFaction;
+    }
+  }
   function setTabs(){document.querySelectorAll('.ebsfTab').forEach(t=>t.classList.toggle('on',t.dataset.tab===app.tab));}
-  function render(){ if(app.tab==='targets') targets(); if(app.tab==='spy') spy(); if(app.tab==='settings') settings(); }
+  function render(){ if(app.tab==='targets') targets(); if(app.tab==='spy') spy(); if(app.tab==='settings') settings(); if(app.tab==='admin') adminIntel(); }
 
   function userSummary(){
     if(!app.user) return `<div class="note">Go to <b>Settings / Login</b>, enter your Torn limited API key, then click Login / Save All.</div>`;
@@ -126,38 +138,24 @@
   function listTargets(){
     if(!app.members.length) return '<div class="empty">No targets scanned yet. Login in Settings, then scan here.</div>';
 
-    const rows = app.members.map(m => {
-      const i = m.intel || {};
-      const best = num(i.best_total || i.total);
-      const your = num(app.total);
-      const ratio = best && your ? best / your : null;
-      const level = Number(m.level || 0);
-      const conf = Number(i.confidence || 0);
-      return {m, i, best, your, ratio, level, conf};
-    });
+    const rows = app.members.map(m => enrichTarget(m));
 
     const known = rows.filter(x => x.ratio !== null && x.conf > 0);
     const unknown = rows.filter(x => x.ratio === null || x.conf <= 0);
 
-    // Highest Respect Hits:
-    // Higher level targets with stats just above/near you. More risk, but better respect potential.
     const respect = known
       .filter(x => x.level >= 50 && x.ratio >= 0.95 && x.ratio <= 1.35)
-      .sort((a,b) => (b.level - a.level) || (Math.abs(a.ratio - 1.10) - Math.abs(b.ratio - 1.10)) || (b.conf - a.conf))
+      .sort((a,b) => b.respectScore - a.respectScore)
       .slice(0, 12);
 
-    // Best Target Hits:
-    // Around the same stats, most reliable war hits.
     const bestTargets = known
       .filter(x => x.ratio >= 0.80 && x.ratio <= 1.15 && !respect.some(r => r.m.user_id === x.m.user_id))
-      .sort((a,b) => Math.abs(a.ratio - 0.95) - Math.abs(b.ratio - 0.95) || b.conf - a.conf)
+      .sort((a,b) => b.reliabilityScore - a.reliabilityScore)
       .slice(0, 18);
 
-    // Chain Save Hits:
-    // Really easy targets. Great for chain saving and safe hits.
     const chain = known
       .filter(x => x.ratio <= 0.75 && !respect.some(r => r.m.user_id === x.m.user_id) && !bestTargets.some(r => r.m.user_id === x.m.user_id))
-      .sort((a,b) => a.ratio - b.ratio || b.conf - a.conf)
+      .sort((a,b) => b.chainScore - a.chainScore)
       .slice(0, 18);
 
     const used = new Set([...respect, ...bestTargets, ...chain].map(x => x.m.user_id));
@@ -166,23 +164,73 @@
       .slice(0, 20);
 
     return [
-      section('🔥 Highest Respect Hits', 'High level + just a bit above/near your stats', respect),
-      section('🎯 Best Target Hits', 'Closest reliable fights around your stats', bestTargets),
-      section('⛓️ Chain Save Hits', 'Very easy targets for safe chain saving', chain),
-      section('❔ Other / Unknown', 'Needs spy, estimate, or fight data to rank better', other)
+      section('🔥 Highest Respect Hits', 'High level + just a bit above/near your stats', respect, 'respectScore'),
+      section('🎯 Best Target Hits', 'Closest reliable fights around your stats', bestTargets, 'reliabilityScore'),
+      section('⛓️ Chain Save Hits', 'Very easy targets for safe chain saving', chain, 'chainScore'),
+      section('❔ Other / Unknown', 'Needs spy, estimate, or fight data to rank better', other, 'confidenceOnly')
     ].join('');
   }
 
-  function section(title, sub, items){
+  function enrichTarget(m){
+    const i = m.intel || {};
+    const best = num(i.best_total || i.total);
+    const your = num(app.total);
+    const ratio = best && your ? best / your : null;
+    const level = Number(m.level || 0);
+    const conf = Number(i.confidence || 0);
+    const status = String(m.status || '').toLowerCase();
+
+    const activeBonus = /okay|online|idle/.test(status) ? 8 : 0;
+    const unavailablePenalty = /hospital|travel|jail|abroad/.test(status) ? 28 : 0;
+    const confBonus = Math.min(30, conf * 0.30);
+
+    const nearRespect = ratio ? Math.max(0, 35 - Math.abs(ratio - 1.10) * 80) : 0;
+    const highLevel = Math.min(30, level * 0.35);
+    const respectScore = Math.max(0, Math.round(nearRespect + highLevel + confBonus + activeBonus - unavailablePenalty));
+
+    const closeness = ratio ? Math.max(0, 45 - Math.abs(ratio - 0.95) * 100) : 0;
+    const reliabilityScore = Math.max(0, Math.round(closeness + confBonus + activeBonus - unavailablePenalty));
+
+    const safe = ratio ? Math.max(0, 55 - ratio * 60) : 0;
+    const chainScore = Math.max(0, Math.round(safe + confBonus + activeBonus - unavailablePenalty));
+
+    const warning = confidenceWarning(i, conf, ratio);
+
+    return {m, i, best, your, ratio, level, conf, respectScore, reliabilityScore, chainScore, warning};
+  }
+
+  function confidenceWarning(i, conf, ratio){
+    const source = String(i.source || 'none');
+    const detail = String(i.source_detail || '');
+    if(source === 'none' || conf <= 0) return 'Needs spy/fight data';
+    if(conf < 45) return 'Low confidence';
+    if(/1 attackers|1 fight|1 .*reports/.test(detail)) return 'One fight only';
+    if(source === 'attack_learning' && conf < 70) return 'Learning still young';
+    if(source === 'manual_spy' || source === 'tornstats' || source === 'yata') return 'Exact spy source';
+    if(ratio && ratio > 1.35) return 'Risky target';
+    return '';
+  }
+
+  function section(title, sub, items, scoreKey){
+    const top = items[0] ? `<div class="target topPick">${targetCardInner(items[0].m, items[0].i, items[0].ratio, items[0], true, scoreKey)}</div>` : '';
+    const rest = items.slice(top ? 1 : 0).map(x => `<div class="target">${targetCardInner(x.m, x.i, x.ratio, x, false, scoreKey)}</div>`).join('');
     return `<div class="groupTitle"><div><b>${title}</b><br><span>${sub}</span></div><span>${items.length}</span></div>` +
-      (items.length ? items.map(x => targetCard(x.m, x.i, x.ratio)).join('') : '<div class="empty">No targets in this group yet.</div>');
+      (top ? `<div class="note" style="margin:0 0 6px;color:#facc15">Top pick in this box:</div>${top}` : '') +
+      (rest || (!top ? '<div class="empty">No targets in this group yet.</div>' : ''));
   }
 
   function targetCard(m, i, ratio){
+    const x = enrichTarget(m);
+    return `<div class="target">${targetCardInner(m, i, ratio, x, false, 'confidenceOnly')}</div>`;
+  }
+
+  function targetCardInner(m, i, ratio, x, isTop, scoreKey){
     const label=i.label||'Unknown';
     const cls=label.toLowerCase();
     const ratioTxt = ratio ? `${Math.round(ratio*100)}% of you` : 'unknown';
-    return `<div class="target"><div><div class="name">${esc(m.name)} [${m.user_id}]</div><div class="meta"><span>Lvl ${m.level||'?'}</span><span>${esc(m.status||'')}</span><span>${ratioTxt}</span><span>Total ${fmt(i.best_total||i.total)}</span><span>Range ${fmt(i.range_low)}-${fmt(i.range_high)}</span><span>Conf ${Math.round(i.confidence||0)}%</span><span>${esc(i.source||'none')}</span>${i.source_detail?`<span>Reason: ${esc(i.source_detail)}</span>`:''}</div></div><div class="acts"><span class="pill ${cls}">${label}</span><button class="btn btn2 mini" data-act="profile" data-id="${m.user_id}">Profile</button><button class="btn btn2 mini" data-act="attack" data-id="${m.user_id}" data-name="${esc(m.name)}">Attack</button><button class="btn btn2 mini" data-act="spy" data-id="${m.user_id}">Spy</button><button class="btn btn2 mini" data-act="result" data-id="${m.user_id}" data-name="${esc(m.name)}">Learn</button></div></div>`;
+    const score = scoreKey && scoreKey !== 'confidenceOnly' ? x[scoreKey] : Math.round(i.confidence||0);
+    const scoreName = scoreKey === 'respectScore' ? 'Respect' : scoreKey === 'reliabilityScore' ? 'Reliable' : scoreKey === 'chainScore' ? 'Chain' : 'Conf';
+    return `<div><div class="name">${isTop?'⭐ ':''}${esc(m.name)} [${m.user_id}]</div><div class="meta"><span>Lvl ${m.level||'?'}</span><span>${esc(m.status||'')}</span><span>${ratioTxt}</span><span>Total ${fmt(i.best_total||i.total)}</span><span>Range ${fmt(i.range_low)}-${fmt(i.range_high)}</span><span>Conf ${Math.round(i.confidence||0)}%</span><span>${esc(i.source||'none')}</span>${i.source_detail?`<span>Reason: ${esc(i.source_detail)}</span>`:''}${x.warning?`<span class="warn">⚠ ${esc(x.warning)}</span>`:''}</div><div class="scorePills"><span class="scorePill"><b>${scoreName}</b> ${score}</span><span class="scorePill"><b>Respect</b> ${x.respectScore}</span><span class="scorePill"><b>Safe</b> ${x.reliabilityScore}</span><span class="scorePill"><b>Chain</b> ${x.chainScore}</span></div></div><div class="acts"><span class="pill ${cls}">${label}</span><button class="btn btn2 mini" data-act="profile" data-id="${m.user_id}">Profile</button><button class="btn btn2 mini" data-act="attack" data-id="${m.user_id}" data-name="${esc(m.name)}">Attack</button><button class="btn btn2 mini" data-act="spy" data-id="${m.user_id}">Spy</button><button class="btn btn2 mini" data-act="result" data-id="${m.user_id}" data-name="${esc(m.name)}">Auto</button></div>`;
   }
 
   function spy(){
@@ -243,6 +291,110 @@
     q('#login').onclick=login;
   }
 
+
+  function watchGlobalAttackClicks(){
+    document.addEventListener('click', (e)=>{
+      const a = e.target?.closest?.('a,button');
+      if(!a) return;
+      const href = a.href || a.getAttribute('href') || '';
+      const id = extractTargetIdFromText(href) || extractTargetIdFromText(a.outerHTML || '');
+      if(id && String(id) !== String(app.user?.user_id || '')){
+        const name = findNearbyName(a) || 'Enemy';
+        GM_setValue(S.lastAttack, JSON.stringify({id:Number(id), name, ts:Date.now()}));
+      }
+    }, true);
+  }
+
+  function extractTargetIdFromText(txt){
+    if(!txt) return null;
+    const m = String(txt).match(/(?:user2ID|userID|targetID|XID)[=\\":%26]+(\\d{3,10})/i);
+    return m ? Number(m[1]) : null;
+  }
+
+  function findNearbyName(el){
+    const txt = (el.textContent || el.closest?.('li,div,tr')?.textContent || '').trim();
+    if(!txt) return '';
+    return txt.split('\\n').map(x=>x.trim()).filter(Boolean)[0]?.slice(0,40) || '';
+  }
+
+  function getProfileId(){
+    const id = new URL(location.href).searchParams.get('XID') || extractTargetIdFromText(location.href);
+    return id ? Number(id) : null;
+  }
+
+  async function injectProfileIntel(){
+    if(!location.href.includes('profiles.php')) return;
+    const pid = getProfileId();
+    if(!pid) return;
+    if(app.user && String(pid) === String(app.user.user_id)) return;
+
+    const mount = await waitForProfileMount();
+    if(!mount || document.getElementById('ebsfProfileIntel')) return;
+
+    const box = document.createElement('div');
+    box.id = 'ebsfProfileIntel';
+    box.innerHTML = '<b>⚔️ Battle Stat Finder</b><div class="line">Loading player intel...</div>';
+    mount.prepend(box);
+
+    const yourTotal = app.total || GM_getValue(S.total, '');
+    const r = await get('/api/player/'+encodeURIComponent(pid)+'/intel?your_total='+encodeURIComponent(yourTotal));
+    const p = r.player || null;
+
+    if(!p){
+      box.innerHTML = `<b>⚔️ Battle Stat Finder</b><div class="line">No prediction yet for this player.</div><div class="line">Attack learning, spies, or estimates can teach the app over time.</div><button id="ebsfProfileAttackRemember">Remember if I attack</button>`;
+    } else {
+      const label = p.label || 'Unknown';
+      box.innerHTML = `<b>⚔️ Battle Stat Finder</b><div class="line">Prediction: <b>${esc(label)}</b> • Total: ${fmt(p.best_total||p.total)} • Range: ${fmt(p.range_low)}-${fmt(p.range_high)}</div><div class="line">Confidence: ${Math.round(p.confidence||0)}% • Source: ${esc(p.source||'none')}</div>${p.source_detail?`<div class="line">Reason: ${esc(p.source_detail)}</div>`:''}<button id="ebsfProfileAttackRemember">Remember if I attack</button>`;
+    }
+
+    const btn = document.getElementById('ebsfProfileAttackRemember');
+    if(btn){
+      btn.onclick = () => {
+        const name = (document.title || 'Enemy').replace(' | Torn', '').trim() || 'Enemy';
+        GM_setValue(S.lastAttack, JSON.stringify({id:pid, name, ts:Date.now()}));
+        toast('⚔️ Saved this profile as your next attack target. If you fight them, learning will store it.');
+      };
+    }
+  }
+
+  function waitForProfileMount(){
+    return new Promise(resolve=>{
+      let tries = 0;
+      const t = setInterval(()=>{
+        tries++;
+        const mount = document.querySelector('#profile-container') || document.querySelector('.profile-container') || document.querySelector('[class*="profile"]') || document.body;
+        if(mount || tries > 20){
+          clearInterval(t);
+          resolve(mount || document.body);
+        }
+      }, 500);
+    });
+  }
+
+
+  async function adminIntel(){
+    const adminId = app.user?.user_id || safeJson(GM_getValue(S.user, null))?.user_id;
+    q('#ebsfBody').innerHTML=`<div class="card"><h3>Admin / Intel</h3><p class="note">Loading intel summary...</p></div>`;
+    if(!adminId){
+      q('#ebsfBody').innerHTML=`<div class="card"><h3>Admin / Intel</h3><p class="note">Login first in Settings.</p></div>`;
+      return;
+    }
+    const r = await get('/api/admin/intel-summary?admin_id='+encodeURIComponent(adminId));
+    if(!r.ok){
+      q('#ebsfBody').innerHTML=`<div class="card"><h3>Admin / Intel</h3><p class="note">Admin only or failed to load: ${esc(JSON.stringify(r.error||r))}</p></div>`;
+      return;
+    }
+    const c = r.counts || {};
+    const rows = (r.top || []).map(x=>`<tr><td>${esc(x.name||'Unknown')} [${x.user_id}]</td><td>${fmt(x.total)}</td><td>${fmt(x.range_low)}-${fmt(x.range_high)}</td><td>${Math.round(x.confidence||0)}%</td><td>${esc(x.source||'')}</td><td>${esc(x.source_detail||'')}</td></tr>`).join('');
+    q('#ebsfBody').innerHTML=`<div class="grid"><div class="card"><h3>Intel Stats</h3>
+      <div class="statsBox"><div class="statMini">Users<br><b>${c.users||0}</b></div><div class="statMini">Enemies<br><b>${c.enemies||0}</b></div><div class="statMini">Spies<br><b>${c.spies||0}</b></div><div class="statMini">Fight Results<br><b>${c.attacks||0}</b></div></div>
+      <button id="adminRefresh" class="btn btn2" style="margin-top:10px">Refresh Intel</button>
+      <p class="note">Use this to see if the app is learning. More fight results and spy entries means stronger predictions.</p>
+      </div><div class="card"><h3>Top Confident Predictions</h3><table class="adminTable"><thead><tr><th>Enemy</th><th>Total</th><th>Range</th><th>Conf</th><th>Source</th><th>Reason</th></tr></thead><tbody>${rows||'<tr><td colspan="6">No data yet.</td></tr>'}</tbody></table></div></div>`;
+    q('#adminRefresh').onclick=()=>adminIntel();
+  }
+
+
   function actTarget(e){
     const id=Number(e.currentTarget.dataset.id);
     const name=e.currentTarget.dataset.name || 'Unknown';
@@ -255,7 +407,7 @@
       location.href=`https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
     }
     if(a==='spy'){app.tab='spy';setTabs();render();}
-    if(a==='result') toast('⚔️ Results are automatic now. Use Attack so the script can learn from the fight page.');
+    if(a==='result') toast('⚔️ Learning is automatic. Attack this target and the script will save the result from the fight page.');
   }
 
   async function login(){
@@ -292,6 +444,7 @@
       app.members=r.members||[];
       app.enemyFaction=String(r.enemy_faction_id||app.enemyFaction);
       GM_setValue(S.enemyFaction,app.enemyFaction);
+      GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
       msg('Scan complete: '+app.members.length+' enemies.');
     } else msg('Scan failed: '+JSON.stringify(r.error||r));
   }
@@ -315,7 +468,7 @@
   function watchAttackPage(){
     if(!location.href.includes('loader.php') || !location.href.includes('sid=attack')) return;
 
-    const urlId = new URL(location.href).searchParams.get('user2ID');
+    const urlId = new URL(location.href).searchParams.get('user2ID') || new URL(location.href).searchParams.get('userID') || new URL(location.href).searchParams.get('targetID');
     if(urlId){
       const saved = safeJson(GM_getValue(S.lastAttack, null));
       if(!saved || String(saved.id)!==String(urlId)){
@@ -336,8 +489,16 @@
   }
 
   function detectFightEndAndAutoSave(){
-    const saved = safeJson(GM_getValue(S.lastAttack, null));
-    if(!saved || !saved.id) return;
+    let saved = safeJson(GM_getValue(S.lastAttack, null));
+    if(!saved || !saved.id){
+      const found = detectTargetFromPage();
+      if(found){
+        saved = {id:found.id, name:found.name||'Enemy', ts:Date.now()};
+        GM_setValue(S.lastAttack, JSON.stringify(saved));
+      } else {
+        return;
+      }
+    }
     if(Date.now() - saved.ts > 1000 * 60 * 20) return;
 
     const text = (document.body?.innerText || '').toLowerCase();
@@ -370,6 +531,24 @@
     const detail = extractFightDetails(text);
     const result = classifyFightResult(text, won, detail);
     autoSaveFightResult(saved.id, saved.name || 'Enemy', result, false, detail);
+  }
+
+  function detectTargetFromPage(){
+    const href = location.href;
+    let id = extractTargetIdFromText(href);
+    if(id) return {id:Number(id), name:'Enemy'};
+
+    const links = [...document.querySelectorAll('a[href*="profiles.php?XID="]')];
+    for(const a of links){
+      const found = extractTargetIdFromText(a.href);
+      if(found && app.user && String(found) !== String(app.user.user_id)){
+        return {id:Number(found), name:(a.textContent||'Enemy').trim() || 'Enemy'};
+      }
+    }
+
+    const saved = safeJson(GM_getValue(S.lastAttack, null));
+    if(saved && saved.id && Date.now() - saved.ts < 1000*60*20) return saved;
+    return null;
   }
 
   function classifyFightResult(text, won, detail){
@@ -519,7 +698,8 @@
     });
 
     if(r.ok){
-      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Re-scan for updated predictions.`);
+      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Predictions will refresh.`);
+      setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1200);
       return true;
     }
     toast('⚔️ Auto learning failed: '+JSON.stringify(r.error||r));
@@ -547,6 +727,19 @@
       generic_win:'Win',
       generic_loss:'Loss'
     })[r] || r;
+  }
+
+  function get(path){
+    return new Promise(resolve=>{
+      GM_xmlhttpRequest({
+        method:'GET',
+        url:API_BASE+path,
+        timeout:30000,
+        onload:r=>{try{resolve(JSON.parse(r.responseText));}catch(e){resolve({ok:false,error:r.responseText});}},
+        onerror:e=>resolve({ok:false,error:e}),
+        ontimeout:()=>resolve({ok:false,error:'timeout'})
+      });
+    });
   }
 
   function post(path,data){
