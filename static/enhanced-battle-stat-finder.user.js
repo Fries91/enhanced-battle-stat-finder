@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.0.6
-// @description  War enemy stat finder with settings-only login, auto battle stats, detailed auto fight learning, spies, and estimates.
+// @version      1.0.8
+// @description  War enemy stat finder with clear ToS/settings, improved learning, confidence, reasons, and automatic fight detection.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -54,7 +54,7 @@
     #ebsfBody{padding:12px;overflow:auto;flex:1}.grid{display:grid;grid-template-columns:330px 1fr;gap:12px}.card{background:#111827;border:1px solid #334155;border-radius:14px;padding:12px}.card h3{margin:0 0 10px;color:#facc15;font-size:14px}.row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
     .inp,.sel,.txt{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:9px 10px}.txt{min-height:72px}.btn{background:#facc15;color:#111827;border:1px solid #facc15;border-radius:10px;padding:9px 10px;font-weight:900}.btn2{background:#1f2937;color:#f8fafc;border-color:#475569}.note{color:#94a3b8;font-size:12px;line-height:1.4}.msg{display:none;margin-top:8px;background:#1e3a8a55;border:1px solid #60a5fa66;color:#bfdbfe;border-radius:10px;padding:8px;font-size:12px}.msg.show{display:block}
     .target{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;background:#0f172a;border:1px solid #334155;border-radius:13px;padding:10px;margin-bottom:8px}.name{font-weight:900}.meta{color:#94a3b8;font-size:11px;margin-top:4px;display:flex;gap:6px;flex-wrap:wrap}.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.mini{font-size:11px;padding:6px 8px}.pill{display:inline-flex;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;border:1px solid #475569}.easy{color:#86efac;background:#22c55e22}.fair{color:#93c5fd;background:#3b82f622}.good{color:#fde68a;background:#facc1522}.difficult{color:#fdba74;background:#f9731622}.avoid{color:#fca5a5;background:#ef444422}.unknown{color:#cbd5e1;background:#64748b22}.empty{border:1px dashed #475569;border-radius:14px;color:#94a3b8;padding:24px;text-align:center;background:#0f172a}
-    .topScanBar{background:#020617;border:1px solid #facc1566;border-radius:14px;padding:10px;margin-bottom:12px}.topScanBar .btn{width:100%;font-size:15px;padding:12px}.topScanBar .row{margin-top:8px;margin-bottom:0}#ebsfAutoToast{position:fixed;left:12px;right:12px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:10px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000;font-size:13px}#ebsfAutoToast b{color:#facc15}.statsBox{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}.statMini{background:#020617;border:1px solid #334155;border-radius:10px;padding:8px;color:#cbd5e1;font-size:12px}.statMini b{color:#facc15}
+    .topScanBar{background:#020617;border:1px solid #facc1566;border-radius:14px;padding:10px;margin-bottom:12px}.topScanBar .btn{width:100%;font-size:15px;padding:12px}.topScanBar .row{margin-top:8px;margin-bottom:0}#ebsfAutoToast{position:fixed;left:12px;right:12px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:10px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000;font-size:13px}#ebsfAutoToast b{color:#facc15}.infoBox{background:#020617;border:1px solid #334155;border-radius:14px;padding:12px;margin-bottom:10px}.infoBox h3{margin:0 0 8px;color:#facc15;font-size:14px}.infoBox p{margin:0 0 8px}.infoBox ul{margin:8px 0 0 18px;padding:0;color:#cbd5e1;font-size:12px;line-height:1.45}.loginBottom{margin-top:14px;border-top:1px solid #334155;padding-top:12px}.statsBox{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}.statMini{background:#020617;border:1px solid #334155;border-radius:10px;padding:8px;color:#cbd5e1;font-size:12px}.statMini b{color:#facc15}
     #ebsfFightPrompt{position:fixed;left:10px;right:10px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:12px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000}
     #ebsfFightPrompt b{color:#facc15}.ebsfPromptBtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.ebsfPromptBtns button{background:#1f2937;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:8px;font-weight:800}.ebsfPromptBtns button:first-child{background:#facc15;color:#111827;border-color:#facc15}
     @media(max-width:760px){#ebsfPanel{width:calc(100vw - 6px);height:calc(100vh - 6px);border-radius:10px}.grid,.row,.statsBox{grid-template-columns:1fr}.target{grid-template-columns:1fr}.acts{justify-content:flex-start}}
@@ -73,7 +73,7 @@
     r.innerHTML=`
       <div id="ebsfPanel">
         <div class="ebsfHead">
-          <div><b>⚔️ Enhanced Battle Stat Finder</b><small>top scan • detailed auto fight learning</small></div>
+          <div><b>⚔️ Enhanced Battle Stat Finder</b><small>confidence • reasons • auto learning</small></div>
           <button class="ebsfClose">Close</button>
         </div>
         <div class="ebsfTabs">
@@ -129,7 +129,7 @@
       const i=m.intel||{};
       const label=i.label||'Unknown';
       const cls=label.toLowerCase();
-      return `<div class="target"><div><div class="name">${esc(m.name)} [${m.user_id}]</div><div class="meta"><span>Lvl ${m.level||'?'}</span><span>${esc(m.status||'')}</span><span>Total ${fmt(i.best_total||i.total)}</span><span>Range ${fmt(i.range_low)}-${fmt(i.range_high)}</span><span>Conf ${Math.round(i.confidence||0)}%</span><span>${esc(i.source||'none')}</span></div></div><div class="acts"><span class="pill ${cls}">${label}</span><button class="btn btn2 mini" data-act="profile" data-id="${m.user_id}">Profile</button><button class="btn btn2 mini" data-act="attack" data-id="${m.user_id}" data-name="${esc(m.name)}">Attack</button><button class="btn btn2 mini" data-act="spy" data-id="${m.user_id}">Spy</button><button class="btn btn2 mini" data-act="result" data-id="${m.user_id}" data-name="${esc(m.name)}">Learn</button></div></div>`;
+      return `<div class="target"><div><div class="name">${esc(m.name)} [${m.user_id}]</div><div class="meta"><span>Lvl ${m.level||'?'}</span><span>${esc(m.status||'')}</span><span>Total ${fmt(i.best_total||i.total)}</span><span>Range ${fmt(i.range_low)}-${fmt(i.range_high)}</span><span>Conf ${Math.round(i.confidence||0)}%</span><span>${esc(i.source||'none')}</span>${i.source_detail?`<span>Reason: ${esc(i.source_detail)}</span>`:''}</div></div><div class="acts"><span class="pill ${cls}">${label}</span><button class="btn btn2 mini" data-act="profile" data-id="${m.user_id}">Profile</button><button class="btn btn2 mini" data-act="attack" data-id="${m.user_id}" data-name="${esc(m.name)}">Attack</button><button class="btn btn2 mini" data-act="spy" data-id="${m.user_id}">Spy</button><button class="btn btn2 mini" data-act="result" data-id="${m.user_id}" data-name="${esc(m.name)}">Learn</button></div></div>`;
     }).join('');
   }
 
@@ -151,14 +151,43 @@
 
   function settings(){
     const bs=app.user?.battle_stats||{};
-    q('#ebsfBody').innerHTML=`<div class="grid"><div class="card"><h3>Login / Keys</h3>
-      <input id="key" class="inp" type="password" placeholder="Torn limited API key" value="${esc(app.key)}" style="margin-bottom:8px">
-      <input id="tskey" class="inp" type="password" placeholder="TornStats key optional" value="${esc(app.tornstats)}" style="margin-bottom:8px">
-      <input id="yatakey" class="inp" type="password" placeholder="YATA key optional / saved only" value="${esc(app.yata)}" style="margin-bottom:8px">
-      <button id="login" class="btn">Login / Save All</button>
-      ${app.user?`<div class="statsBox"><div class="statMini">Total<br><b>${fmt(app.total||bs.total)}</b></div><div class="statMini">Str<br><b>${fmt(bs.strength)}</b></div><div class="statMini">Def<br><b>${fmt(bs.defense)}</b></div><div class="statMini">Spd<br><b>${fmt(bs.speed)}</b></div><div class="statMini">Dex<br><b>${fmt(bs.dexterity)}</b></div></div>`:''}
-      <div class="msg ${app.msg?'show':''}">${esc(app.msg)}</div>
-      </div><div class="card"><h3>ToS / Data Use</h3><p class="note">Use a Torn limited API key. This app stores your user ID, faction ID, detected battle stat total, shared enemy spy entries, manual estimates, and attack-result labels. Data is used to rank enemy war targets and improve stat estimates for your faction. Do not enter passwords. Do not submit spy or estimate data you are not allowed to share.</p><p class="note">Auto fight learning reads visible fight-result text and stores simple labels like Easy Win, Close Win, Close Loss, or Hard Loss when it can detect enough detail.</p></div></div>`;
+    q('#ebsfBody').innerHTML=`<div class="card">
+      <div class="infoBox">
+        <h3>⚔️ How This Works</h3>
+        <p class="note"><b>Battle Stat Finder</b> helps your faction find smarter war targets. It compares your detected battle stats against saved spy data, safe estimates, and automatic fight learning from faction members.</p>
+        <p class="note">The first scans may look basic. The app gets sharper as your faction adds spies, imports trusted estimates, and fights more enemies. Give it time to learn.</p>
+        <ul>
+          <li>Scans the enemy faction roster during war.</li>
+          <li>Ranks enemies as Easy, Fair, Good, Difficult, Avoid, or Unknown.</li>
+          <li>Improves predictions after real fights without giving away the full method.</li>
+          <li>Shows a simple reason when enough data exists.</li>
+        </ul>
+      </div>
+
+      <div class="infoBox">
+        <h3>📜 Terms of Use</h3>
+        <p class="note">Use this tool responsibly and only with information you are allowed to share with your faction. Do not submit fake spy reports or enemy estimates. Predictions are estimates, not guarantees, and fights can still be affected by weapons, builds, life, perks, temporary items, and RNG.</p>
+        <p class="note">This app is for faction war planning and target sorting. It does not ask for your Torn password and should never be used to collect another player’s private information without permission.</p>
+      </div>
+
+      <div class="infoBox">
+        <h3>🔑 API Key Use & Storage</h3>
+        <p class="note">Use a <b>Torn limited API key</b>. Your key is used to log you into this app, confirm your Torn identity/faction, detect your battle stat total where your key allows it, and scan war/faction data needed for target sorting.</p>
+        <p class="note">Your Torn API key is saved locally in your userscript storage so you do not have to type it every time. The backend stores a one-way hash of your Torn key for login tracking, not the raw Torn key.</p>
+        <p class="note">Optional TornStats/YATA keys are only for optional spy imports and are saved only if you enter them. Shared app data may include your user ID, faction ID, detected stat total, submitted spy/estimate data, and automatic fight-learning labels.</p>
+        <p class="note"><b>Data sharing:</b> enemy intel and learning data are intended for your faction’s use only. Do not enter data you are not allowed to share.</p>
+      </div>
+
+      <div class="loginBottom">
+        <h3>Login / Keys</h3>
+        <input id="key" class="inp" type="password" placeholder="Torn limited API key" value="${esc(app.key)}" style="margin-bottom:8px">
+        <input id="tskey" class="inp" type="password" placeholder="TornStats key optional" value="${esc(app.tornstats)}" style="margin-bottom:8px">
+        <input id="yatakey" class="inp" type="password" placeholder="YATA key optional / saved only" value="${esc(app.yata)}" style="margin-bottom:8px">
+        <button id="login" class="btn">Login / Save All</button>
+        ${app.user?`<div class="statsBox"><div class="statMini">Total<br><b>${fmt(app.total||bs.total)}</b></div><div class="statMini">Str<br><b>${fmt(bs.strength)}</b></div><div class="statMini">Def<br><b>${fmt(bs.defense)}</b></div><div class="statMini">Spd<br><b>${fmt(bs.speed)}</b></div><div class="statMini">Dex<br><b>${fmt(bs.dexterity)}</b></div></div>`:''}
+        <div class="msg ${app.msg?'show':''}">${esc(app.msg)}</div>
+      </div>
+    </div>`;
     q('#login').onclick=login;
   }
 
@@ -174,7 +203,7 @@
       location.href=`https://www.torn.com/loader.php?sid=attack&user2ID=${id}`;
     }
     if(a==='spy'){app.tab='spy';setTabs();render();}
-    if(a==='result') autoSaveFightResult(id, m.name || name, 'generic_win', true);
+    if(a==='result') toast('⚔️ Results are automatic now. Use Attack so the script can learn from the fight page.');
   }
 
   async function login(){
@@ -286,12 +315,13 @@
     if(GM_getValue(S.lastPrompted, '') === key) return;
     GM_setValue(S.lastPrompted, key);
 
-    const result = classifyFightResult(text, won);
-    autoSaveFightResult(saved.id, saved.name || 'Enemy', result, false);
+    const detail = extractFightDetails(text);
+    const result = classifyFightResult(text, won, detail);
+    autoSaveFightResult(saved.id, saved.name || 'Enemy', result, false, detail);
   }
 
-  function classifyFightResult(text, won){
-    const detail = extractFightDetails(text);
+  function classifyFightResult(text, won, detail){
+    detail = detail || extractFightDetails(text);
 
     // Best automatic classes:
     // easy_win: you won with strong signs it was not close
@@ -332,7 +362,11 @@
       yourLifePct: null,
       enemyLifePct: null,
       closeWords: false,
-      stalemate: false
+      stalemate: false,
+      hitCount: 0,
+      missCount: 0,
+      critCount: 0,
+      quality: 45
     };
 
     detail.stalemate = text.includes('stalemate');
@@ -345,20 +379,22 @@
       'low health',
       'you are low',
       'could not finish',
-      'struggle'
+      'struggle',
+      'withstand'
     ];
     detail.closeWords = closeHints.some(w => text.includes(w));
 
-    // Count visible fight-log lines by common Torn combat verbs.
-    // This is only a rough estimate, but it helps separate quick stomps from long close fights.
-    const verbs = [' hit ', ' missed ', ' fired ', ' attacked ', ' struck ', ' critically ', ' dodged ', ' blocked '];
+    detail.hitCount = countWords(text, [' hit ', ' hits ', ' struck ', ' attacked ', ' fired ']);
+    detail.missCount = countWords(text, [' missed ', ' dodged ', ' evaded ']);
+    detail.critCount = countWords(text, [' critical ', ' critically ', ' crit ']);
+
+    const verbs = [' hit ', ' hits ', ' missed ', ' fired ', ' attacked ', ' struck ', ' critically ', ' dodged ', ' blocked ', ' evaded '];
     let count = 0;
     for(const v of verbs){
       count += (text.match(new RegExp(escapeReg(v), 'g')) || []).length;
     }
-    detail.turns = Math.min(60, count);
+    detail.turns = Math.min(80, count);
 
-    // Try to detect life formats from different Torn/PDA layouts.
     const lifePairs = [...text.matchAll(/(?:life|health|hp)[^\d]{0,20}([\d,]+)\s*\/\s*([\d,]+)/gi)];
     if(lifePairs.length){
       const first = pct(lifePairs[0][1], lifePairs[0][2]);
@@ -369,13 +405,29 @@
       }
     }
 
-    const youPct = text.match(/(?:you|your)[^\n]{0,35}?(\d{1,3})\s*%\s*(?:life|health|hp)/i);
+    const youPct = text.match(/(?:you|your)[^\n]{0,45}?(\d{1,3})\s*%\s*(?:life|health|hp)/i);
     if(youPct) detail.yourLifePct = clampPct(Number(youPct[1]));
 
-    const enemyPct = text.match(/(?:enemy|opponent|target|their)[^\n]{0,35}?(\d{1,3})\s*%\s*(?:life|health|hp)/i);
+    const enemyPct = text.match(/(?:enemy|opponent|target|their)[^\n]{0,45}?(\d{1,3})\s*%\s*(?:life|health|hp)/i);
     if(enemyPct) detail.enemyLifePct = clampPct(Number(enemyPct[1]));
 
+    let q = 45;
+    if(detail.turns > 0) q += 15;
+    if(detail.yourLifePct !== null) q += 18;
+    if(detail.enemyLifePct !== null) q += 18;
+    if(detail.stalemate || detail.closeWords) q += 8;
+    if(detail.hitCount || detail.missCount || detail.critCount) q += 6;
+    detail.quality = Math.max(35, Math.min(96, q));
+
     return detail;
+  }
+
+  function countWords(text, words){
+    let n = 0;
+    for(const w of words){
+      n += (text.match(new RegExp(escapeReg(w), 'g')) || []).length;
+    }
+    return n;
   }
 
   function pct(a,b){
@@ -394,7 +446,7 @@
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  async function autoSaveFightResult(targetId, targetName, result, manualButton){
+  async function autoSaveFightResult(targetId, targetName, result, manualButton, detail){
     if(!app.user || !app.user.user_id){
       app.user = safeJson(GM_getValue(S.user, null));
     }
@@ -415,7 +467,7 @@
     });
 
     if(r.ok){
-      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)}. Re-scan targets for updated predictions.`);
+      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Re-scan for updated predictions.`);
       return true;
     }
     toast('⚔️ Auto learning failed: '+JSON.stringify(r.error||r));
