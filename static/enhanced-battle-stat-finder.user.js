@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.1.6
-// @description  War target finder with colored prediction badges, gray N/A for no intel, clean settings, admin intel, and automatic learning.
+// @version      1.1.9
+// @description  War target finder with auto-start login scan, sticky prediction badges, clean rules/API settings, admin intel, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/factions.php*
 // @match        https://www.torn.com/loader.php?sid=attack*
@@ -29,7 +29,8 @@
     yata: 'ebsf_yata_key',
     lastAttack: 'ebsf_last_attack_id',
     lastPrompted: 'ebsf_last_auto_learned_attack',
-    lastScan: 'ebsf_last_scan_payload'
+    lastScan: 'ebsf_last_scan_payload',
+    intelCache: 'ebsf_intel_cache'
   };
 
   let app = {
@@ -59,7 +60,8 @@
     #ebsfFightPrompt{position:fixed;left:10px;right:10px;bottom:12px;z-index:999999;background:#0b1120;border:1px solid #facc15;border-radius:14px;padding:12px;color:#f8fafc;font-family:Arial,sans-serif;box-shadow:0 20px 50px #000}
     #ebsfFightPrompt b{color:#facc15}.ebsfPromptBtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.ebsfPromptBtns button{background:#1f2937;color:#f8fafc;border:1px solid #475569;border-radius:10px;padding:8px;font-weight:800}.ebsfPromptBtns button:first-child{background:#facc15;color:#111827;border-color:#facc15}
 
-.ebsfNameBadge{display:inline-flex!important;align-items:center;justify-content:center;margin-left:4px;padding:2px 6px;border-radius:999px;border:1px solid #475569;font-size:10px;font-weight:900;line-height:1;background:#111827;color:#cbd5e1;vertical-align:middle;box-shadow:0 1px 4px #0008;position:relative;z-index:20;min-width:28px}
+.ebsfNameBadge{display:inline-flex!important;align-items:center;justify-content:center;margin-left:4px;padding:2px 6px;border-radius:4px;border:1px solid #475569;font-size:10px;font-weight:900;line-height:1;background:#111827;color:#cbd5e1;vertical-align:middle;box-shadow:0 1px 4px #0008;position:relative;z-index:50;min-width:30px;text-shadow:none!important;font-family:Arial,sans-serif!important}
+.ebsfHonorBadge{position:absolute!important;right:2px;top:2px;margin:0!important;padding:2px 5px!important;border-radius:4px!important;font-size:9px!important;z-index:60!important;pointer-events:none}
 .ebsfNameBadge.easy{background:#052e16;color:#86efac;border-color:#22c55e}
 .ebsfNameBadge.fair{background:#172554;color:#93c5fd;border-color:#3b82f6}
 .ebsfNameBadge.good{background:#422006;color:#fde68a;border-color:#f59e0b}
@@ -73,7 +75,8 @@
   boot();
   watchAttackPage();
   injectNameBadges();
-  setInterval(injectNameBadges, 7000);
+  injectHonorBadgesFromRoster();
+  setInterval(()=>{injectNameBadges(); injectHonorBadgesFromRoster();}, 5000);
   watchGlobalAttackClicks();
 
   function boot(){
@@ -131,7 +134,7 @@
         <button id="scanTop" class="btn">🔎 Scan Enemy Targets Using My Stats</button>
         <input id="enemyFaction" class="inp" placeholder="Enemy faction ID optional - leave blank to auto-detect active war" value="${esc(app.enemyFaction)}" style="margin-top:8px">
         <div class="msg ${app.msg?'show':''}">${esc(app.msg)}</div>
-        <div class="note" style="margin-top:8px">${app.user ? `Logged in as <b>${esc(app.user.name)}</b> • Stats: <b>${fmt(app.total)}</b>` : 'Login first in Settings / Login.'}</div>
+        <div class="note" style="margin-top:8px">${app.user ? `Logged in as <b>${esc(app.user.name)}</b> • Stats: <b>${fmt(app.total)}</b>` : 'Login in Settings once; the app auto-starts after login.'}</div>
       </div>
       <div class="card"><h3>Organized Targets</h3>${listTargets()}</div>`;
     q('#scanTop').onclick=scan;
@@ -256,30 +259,30 @@
     const bs=app.user?.battle_stats||{};
     q('#ebsfBody').innerHTML=`<div class="card">
       <div class="infoBox">
-        <h3>⚔️ What This App Does</h3>
-        <p class="note"><b>Enhanced Battle Stat Finder</b> helps your faction sort war targets faster. It uses your detected battle stat total, learned fight results, saved intel, and confidence scoring to show smarter target groups.</p>
-        <p class="note"><b>Important:</b> it needs time to learn. Early scans may show Unknown or low-confidence targets. The more your faction fights, the sharper the estimates get.</p>
+        <h3>⚔️ How This App Starts</h3>
+        <p class="note"><b>Enhanced Battle Stat Finder</b> starts from one login. After you click <b>Login / Save All</b>, it detects your battle stat total, switches to the target view, scans the active enemy faction when available, caches known predictions, and paints colored stat badges beside names/honor bars.</p>
+        <p class="note"><b>It needs time to learn.</b> Early scans may show <b>N/A</b>, Unknown, or low-confidence targets. As your faction attacks more players, the backend learns and the badges become more useful.</p>
         <ul>
-          <li>Ranks enemies into respect hits, best target hits, and chain-save hits.</li>
-          <li>Shows simple colored prediction badges beside player names when intel exists.</li>
-          <li>Automatically learns from attack pages without asking users to save results.</li>
-          <li>Shows warnings when data is weak, old, or based on too few fights.</li>
+          <li>Auto-starts after login.</li>
+          <li>Shows sticky colored prediction badges when intel is known.</li>
+          <li>Stores known predictions locally so they stay visible on reload.</li>
+          <li>Automatically learns from attack pages without users saving results.</li>
         </ul>
       </div>
 
       <div class="infoBox">
         <h3>📜 Rules & Fair Use</h3>
-        <p class="note">Use this tool for faction war planning and target sorting only. Predictions are estimates, not guarantees. Torn fights can change because of gear, temps, life, perks, build type, RNG, or recent player growth.</p>
-        <p class="note">Do not add fake intel, do not share information you are not allowed to share, and do not use this to harass players. This app does not ask for your Torn password.</p>
-        <p class="note">Colored badges and target groups are only helper signals. Players should still use judgment before attacking.</p>
+        <p class="note">Use this tool for faction war planning and target sorting only. Predictions are estimates, not guaranteed battle stats. Fights can change because of gear, temps, life, perks, build type, random fight outcomes, or recent player growth.</p>
+        <p class="note">Do not enter fake intel, do not share information you are not allowed to share, and do not use this app to harass players. The app is meant to help your faction make smarter, cleaner target choices.</p>
+        <p class="note">Badge colors are helper signals: green/blue is safer, gold/orange is riskier, red means avoid, and gray <b>N/A</b> means the app does not have enough intel yet.</p>
       </div>
 
       <div class="infoBox">
         <h3>🔑 API Key Use & Storage</h3>
-        <p class="note"><b>Required:</b> Torn limited API key. It is used to confirm your Torn identity, faction, and battle stat total where your key allows it. It also lets the app scan active war/faction data needed for target sorting.</p>
-        <p class="note"><b>Storage:</b> your Torn key is saved locally in your userscript manager/PDA storage so you do not need to type it every time. The backend stores a one-way hash for login tracking, not the raw Torn key.</p>
-        <p class="note"><b>Shared learning data:</b> user ID, faction ID, detected stat total, target ID, simple fight result labels, and basic fight-read confidence may be stored so your faction’s predictions improve over time.</p>
-        <p class="note"><b>Optional keys:</b> TornStats/YATA fields are optional and only saved if entered. Normal users only need the Torn limited key.</p>
+        <p class="note"><b>Required:</b> Torn limited API key. It is used to confirm your Torn identity and faction, detect your battle stat total where your key allows it, and scan active war/faction data for target sorting.</p>
+        <p class="note"><b>Local storage:</b> your Torn key is saved in your userscript manager/PDA storage so you do not need to type it every time.</p>
+        <p class="note"><b>Backend storage:</b> the backend stores a one-way hash of your Torn key for login tracking, not the raw Torn key. Learned data can include user ID, faction ID, detected stat total, target ID, simple fight result labels, and fight-read confidence.</p>
+        <p class="note"><b>Shared learning:</b> learned target intel is intended for your faction’s use so predictions improve over time. Optional TornStats/YATA fields are not required for normal users and are only saved if entered.</p>
       </div>
 
       <div class="loginBottom">
@@ -331,9 +334,116 @@
 
 
 
+
+  function injectHonorBadgesFromRoster(){
+    // BSP-style fallback for faction war tables where honor bars may not expose profile links.
+    // Uses the enemy roster from the latest scan and matches visible honor-bar names.
+    if(!app.members || !app.members.length) loadCachedScan();
+    if(!app.members || !app.members.length) return;
+
+    for(const m of app.members){
+      if(!m || !m.name) continue;
+      const mount = findNameMountByRosterName(m.name);
+      if(!mount || mount.dataset.ebsfHonorBadgeDone === '1') continue;
+
+      mount.dataset.ebsfHonorBadgeDone = '1';
+      const intel = m.intel || {};
+      const badge = buildPredictionBadge(intel, m.user_id);
+      badge.classList.add('ebsfHonorBadge');
+
+      try{
+        const cs = getComputedStyle(mount);
+        if(cs.position === 'static') mount.style.position = 'relative';
+        mount.appendChild(badge);
+      }catch(e){}
+    }
+  }
+
+
+  function buildPredictionBadge(intel, playerId){
+    const badge = document.createElement('span');
+
+    if((!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)) && playerId){
+      intel = getCachedIntel(playerId);
+    }
+
+    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
+      badge.className = 'ebsfNameBadge unknown';
+      badge.textContent = 'N/A';
+      badge.title = 'No Battle Stat Finder intel yet';
+      return badge;
+    }
+
+    const label = (intel.label || 'Unknown').toLowerCase();
+    badge.className = 'ebsfNameBadge ' + (['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown');
+    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
+    badge.textContent = fmtShort(val);
+    badge.title = `Battle Stat Finder: ${intel.label || 'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
+    return badge;
+  }
+
+  function findNameMountByRosterName(name){
+    const target = normName(name);
+    if(!target) return null;
+
+    const selectors = [
+      '[class*="honor"]',
+      '[class*="member"]',
+      '[class*="name"]',
+      'td',
+      'div',
+      'span',
+      'a'
+    ];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const s of selectors){
+      const nodes = document.querySelectorAll(s);
+      for(const el of nodes){
+        if(el.dataset?.ebsfHonorBadgeDone === '1') continue;
+        if(el.querySelector?.('.ebsfNameBadge')) continue;
+
+        const text = normName(el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || '');
+        if(!text || !text.includes(target)) continue;
+
+        const r = el.getBoundingClientRect?.();
+        if(!r || r.width < 25 || r.height < 8 || r.width > 360 || r.height > 75) continue;
+        if(r.bottom < 0 || r.top > window.innerHeight + 400) continue;
+
+        let score = 0;
+        if(s.includes('honor')) score += 40;
+        if(s.includes('name')) score += 25;
+        if(s.includes('member')) score += 15;
+        if(text === target) score += 35;
+        score -= Math.abs(text.length - target.length) * 0.5;
+        score -= Math.max(0, r.width - 230) * 0.05;
+
+        if(score > bestScore){
+          bestScore = score;
+          best = el;
+        }
+      }
+      if(best && bestScore > 40) return best;
+    }
+    return best;
+  }
+
+  function normName(s){
+    return String(s||'')
+      .replace(/\[[^\]]*\]/g,'')
+      .replace(/[^a-z0-9_-]/gi,'')
+      .toLowerCase()
+      .trim();
+  }
+
+
+
   async function injectNameBadges(){
     // Handles normal profile links AND Torn faction war tables where the honor bar/name
-    // is often not a normal profile link.
+    // is often not a normal profile link. Known predictions are cached so they stay visible
+    // instantly on future page loads, then refresh in the background.
     const targets = collectBadgeTargets().slice(0, 140);
     if(!targets.length) return;
 
@@ -346,10 +456,9 @@
 
       const badge = document.createElement('span');
       badge.className = 'ebsfNameBadge unknown';
-      badge.textContent = '...';
-      badge.title = 'Battle Stat Finder loading prediction';
+      badge.textContent = 'N/A';
+      badge.title = 'No Battle Stat Finder intel yet';
 
-      // For honor bars, append after the honor/name block; for links, insert after link.
       try {
         if(t.mode === 'after') t.mount.insertAdjacentElement('afterend', badge);
         else t.mount.appendChild(badge);
@@ -357,26 +466,92 @@
         continue;
       }
 
+      // 1) Show cached prediction immediately if known.
+      const cached = getCachedIntel(t.id);
+      if(cached){
+        applyBadgeIntel(badge, cached, true);
+      }
+
+      // 2) Refresh from backend in background and update cache/badge if newer.
       try{
         const r = await get('/api/player/'+encodeURIComponent(t.id)+'/intel?your_total='+encodeURIComponent(yourTotal));
         const p = r.player || r.enemy || null;
         if(!p){
-          badge.textContent = 'N/A';
-          badge.className = 'ebsfNameBadge unknown';
-          badge.title = 'No Battle Stat Finder intel yet';
+          if(!cached){
+            badge.textContent = 'N/A';
+            badge.className = 'ebsfNameBadge unknown';
+            badge.title = 'No Battle Stat Finder intel yet';
+          }
           continue;
         }
-
-        const label = (p.label || 'Unknown').toLowerCase();
-        badge.className = 'ebsfNameBadge ' + label;
-        badge.textContent = fmtShort(p.best_total || p.total || ((p.range_low && p.range_high) ? ((p.range_low+p.range_high)/2) : 0));
-        badge.title = `Battle Stat Finder: ${p.label || 'Unknown'} • ${fmt(p.best_total||p.total)} • ${Math.round(p.confidence||0)}% confidence`;
+        saveCachedIntel(t.id, p);
+        applyBadgeIntel(badge, p, false);
       }catch(e){
-        badge.textContent = 'N/A';
-        badge.className = 'ebsfNameBadge unknown';
+        // If backend fails, keep cached known badge. If no cache, keep N/A.
+        if(!cached){
+          badge.textContent = 'N/A';
+          badge.className = 'ebsfNameBadge unknown';
+        }
       }
     }
   }
+
+  function applyBadgeIntel(badge, intel, cached){
+    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
+      badge.textContent = 'N/A';
+      badge.className = 'ebsfNameBadge unknown';
+      badge.title = 'No Battle Stat Finder intel yet';
+      return;
+    }
+    const label = (intel.label || 'Unknown').toLowerCase();
+    badge.className = 'ebsfNameBadge ' + (['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown');
+    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
+    badge.textContent = fmtShort(val);
+    badge.title = `Battle Stat Finder${cached?' cached':''}: ${intel.label || 'Unknown'} • ${fmt(val)} • ${Math.round(intel.confidence||0)}% confidence`;
+  }
+
+  function getIntelCache(){
+    const c = safeJson(GM_getValue(S.intelCache, '{}')) || {};
+    return c && typeof c === 'object' ? c : {};
+  }
+
+  function saveIntelCache(c){
+    // Keep local storage from growing forever.
+    const entries = Object.entries(c).sort((a,b)=>(b[1].ts||0)-(a[1].ts||0)).slice(0, 700);
+    GM_setValue(S.intelCache, JSON.stringify(Object.fromEntries(entries)));
+  }
+
+  function getCachedIntel(id){
+    const c = getIntelCache();
+    const row = c[String(id)];
+    if(!row || !row.intel) return null;
+    // Keep known predictions around for 30 days locally.
+    if(Date.now() - (row.ts || 0) > 1000*60*60*24*30) return null;
+    return row.intel;
+  }
+
+  function saveCachedIntel(id, intel){
+    if(!id || !intel) return;
+    const c = getIntelCache();
+    c[String(id)] = {intel, ts:Date.now()};
+    saveIntelCache(c);
+  }
+
+  function cacheIntelFromMembers(members){
+    if(!members || !members.length) return;
+    const c = getIntelCache();
+    let changed = false;
+    for(const m of members){
+      if(!m || !m.user_id || !m.intel) continue;
+      const i = m.intel;
+      if(i.best_total || i.total || i.range_low || i.range_high){
+        c[String(m.user_id)] = {intel:i, ts:Date.now()};
+        changed = true;
+      }
+    }
+    if(changed) saveIntelCache(c);
+  }
+
 
   function collectBadgeTargets(){
     const out = [];
@@ -513,9 +688,46 @@
       GM_setValue(S.user,JSON.stringify(app.user));
       GM_setValue(S.total,app.total);
       await post('/api/settings/integrations',{user_id:app.user.user_id,tornstats_key:app.tornstats,yata_key:app.yata,share_attack_learning:true,share_spies:true});
-      msg(app.total ? `Logged in. Auto detected total battle stats: ${fmt(app.total)}.` : 'Logged in, but battle stats were not returned by API. You may need a key with battle stats access.');
+      msg(app.total ? `Logged in. Auto detected total battle stats: ${fmt(app.total)}. Starting scan...` : 'Logged in, but battle stats were not returned by API. Starting scan anyway.');
+      await autoStartAfterLogin();
     } else msg('Login failed: '+JSON.stringify(r.error||r));
   }
+
+
+  async function autoStartAfterLogin(){
+    // Starts the app immediately after login:
+    // 1) switches to Targets tab
+    // 2) tries active-war auto scan
+    // 3) caches predictions
+    // 4) paints badges
+    app.tab = 'targets';
+    setTabs();
+    render();
+
+    try{
+      const r=await post('/api/war/enemy-scan',{
+        api_key:app.key,
+        your_total:app.total,
+        enemy_faction_id:app.enemyFaction || '',
+        faction_id:app.user?.faction_id
+      });
+      if(r.ok){
+        app.members=r.members||[];
+        app.enemyFaction=String(r.enemy_faction_id||app.enemyFaction||'');
+        GM_setValue(S.enemyFaction,app.enemyFaction);
+        GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
+        cacheIntelFromMembers(app.members);
+        msg('Logged in and auto-scanned: '+app.members.length+' targets.');
+        render();
+        setTimeout(()=>{injectNameBadges(); injectHonorBadgesFromRoster();}, 700);
+      } else {
+        msg('Logged in. Auto-scan needs an active war or enemy faction ID: '+JSON.stringify(r.error||r));
+      }
+    }catch(e){
+      msg('Logged in. Auto-scan failed. You can press Scan manually.');
+    }
+  }
+
 
   async function scan(){
     if(!app.user || !app.key){
@@ -531,7 +743,9 @@
       app.enemyFaction=String(r.enemy_faction_id||app.enemyFaction);
       GM_setValue(S.enemyFaction,app.enemyFaction);
       GM_setValue(S.lastScan, JSON.stringify({members:app.members, enemyFaction:app.enemyFaction, ts:Date.now()}));
+      cacheIntelFromMembers(app.members);
       msg('Scan complete: '+app.members.length+' enemies.');
+      setTimeout(()=>{injectNameBadges(); injectHonorBadgesFromRoster();}, 800);
     } else msg('Scan failed: '+JSON.stringify(r.error||r));
   }
 
@@ -785,6 +999,7 @@
 
     if(r.ok){
       toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Predictions will refresh.`);
+      refreshSingleIntel(targetId);
       setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1200);
       return true;
     }
@@ -827,6 +1042,17 @@
       });
     });
   }
+
+
+  async function refreshSingleIntel(targetId){
+    try{
+      const yourTotal = app.total || GM_getValue(S.total, '');
+      const r = await get('/api/player/'+encodeURIComponent(targetId)+'/intel?your_total='+encodeURIComponent(yourTotal));
+      const p = r.player || r.enemy || null;
+      if(p) saveCachedIntel(targetId, p);
+    }catch(e){}
+  }
+
 
   function post(path,data){
     return new Promise(resolve=>{
