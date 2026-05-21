@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.1
-// @description  BSP-inspired player-cell prediction badges, honor-bar-only N/A/stat display, cached intel, and stronger fight learning.
+// @version      1.3.2
+// @description  Honor-bar-only prediction badges with stronger universal PDA fight learning, cached intel, and N/A fallback.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -96,6 +96,7 @@
   setTimeout(()=>paintHonorBadgesOnly(), 2500);
   setupStrongAttackRemembering();
   watchAttackPage();
+  startUniversalFightWatcherIfPending();
   setTimeout(()=>{startSmoothBadgeSystem();  paintHonorBadgesOnly();}, 1300);
   watchGlobalAttackClicks();
 
@@ -377,38 +378,50 @@
 
   function setupStrongAttackRemembering(){
     document.addEventListener('click', (e)=>{
-      const el = e.target?.closest?.('a,button,[onclick],[data-user],[data-id],[data-xid]');
+      const el = e.target?.closest?.('a,button,[onclick],[data-user],[data-id],[data-xid],div');
       if(!el) return;
 
+      const row = el.closest?.('tr, li, [class*="row"], [class*="member"], [class*="action"], [class*="profile"], div');
       const blob = [
         el.href,
-        el.getAttribute('href'),
-        el.getAttribute('onclick'),
-        el.getAttribute('data-user'),
-        el.getAttribute('data-id'),
-        el.getAttribute('data-xid'),
-        el.outerHTML
+        el.getAttribute?.('href'),
+        el.getAttribute?.('onclick'),
+        el.getAttribute?.('data-user'),
+        el.getAttribute?.('data-id'),
+        el.getAttribute?.('data-xid'),
+        el.getAttribute?.('aria-label'),
+        el.getAttribute?.('title'),
+        el.textContent,
+        el.outerHTML,
+        row?.outerHTML,
+        location.href
       ].filter(Boolean).join(' ');
 
-      const id = extractTargetIdFromText(blob);
+      const looksAttack = /attack|fight|user2ID|sid=attack|target|mug|hospital/i.test(blob);
+      if(!looksAttack) return;
+
+      const id = extractTargetIdFromText(blob) || getProfilePageId?.() || detectProfileIdFromPage?.() || findProfileIdFromPageLinks?.();
       if(!id) return;
 
-      const looksAttack = /attack|user2ID|sid=attack|target/i.test(blob);
-      if(!looksAttack && !location.href.includes('profiles.php')) return;
-
       rememberAttackTarget(id, findNearbyName(el) || getPageProfileName() || 'Enemy');
+      GM_setValue('ebsf_attack_click_ts', Date.now());
+      toast?.('⚔️ Target remembered for learning.');
+      startUniversalFightWatcher();
     }, true);
 
-    if(location.href.includes('profiles.php')){
-      const pid = getProfilePageId?.() || extractTargetIdFromText(location.href);
+    if(location.href.includes('profiles.php') || /Profile/i.test(document.title || '')){
+      const pid = getProfilePageId?.() || extractTargetIdFromText(location.href) || detectProfileIdFromPage?.();
       if(pid){
         document.addEventListener('click', (e)=>{
           const el = e.target?.closest?.('a,button,div');
           if(!el) return;
-          const text = (el.textContent || el.getAttribute('title') || el.getAttribute('aria-label') || el.className || '').toString();
+          const text = (el.textContent || el.getAttribute?.('title') || el.getAttribute?.('aria-label') || el.className || '').toString();
           const blob = [text, el.outerHTML || ''].join(' ');
-          if(/attack|loader\.php\?sid=attack|user2ID|target/i.test(blob)){
+          if(/attack|fight|loader\.php\?sid=attack|user2ID|target/i.test(blob)){
             rememberAttackTarget(pid, getPageProfileName() || 'Enemy');
+            GM_setValue('ebsf_attack_click_ts', Date.now());
+            toast?.('⚔️ Target remembered for learning.');
+            startUniversalFightWatcher();
           }
         }, true);
       }
@@ -446,11 +459,13 @@
   function extractTargetIdFromText(txt){
     if(!txt) return null;
     txt = String(txt);
-    let m = txt.match(/(?:user2ID|userID|targetID|XID)[=\\":%26]+(\d{3,10})/i);
+    let m = txt.match(/(?:user2ID|userID|targetID|XID|userId|targetId|profileId)[=\\":%26]+(\d{3,10})/i);
     if(m) return Number(m[1]);
     m = txt.match(/profiles\.php\?XID=(\d{3,10})/i);
     if(m) return Number(m[1]);
     m = txt.match(/loader\.php\?sid=attack[^"']*?(?:user2ID=)?(\d{3,10})/i);
+    if(m) return Number(m[1]);
+    m = txt.match(/\/profiles\/(\d{3,10})/i);
     return m ? Number(m[1]) : null;
   }
 
@@ -1201,7 +1216,8 @@
         buildBadgeNameMap?.();
         msg('Logged in and auto-scanned: '+app.members.length+' targets.');
         render();
-        setTimeout(()=>{ scheduleBadgePaint?.('scan'); paintHonorBadgesOnly?.(); }, 600);
+        setTimeout(()=>{ scheduleBadgePaint?.('scan');
+          setTimeout(()=>paintHonorBadgesOnly?.(), 600); paintHonorBadgesOnly?.(); }, 600);
       } else {
         msg('Logged in. Badges are active. Press Scan on a faction war page if targets do not load.');
       }
@@ -1246,33 +1262,49 @@
   }
 
 
+
+  let ebsfUniversalFightTimer = null;
+  let ebsfUniversalFightObs = null;
+
+  function startUniversalFightWatcher(){
+    if(ebsfUniversalFightTimer) clearInterval(ebsfUniversalFightTimer);
+    ebsfUniversalFightTimer = setInterval(()=>detectFightEndAndAutoSave(), 1200);
+    setTimeout(()=>{ clearInterval(ebsfUniversalFightTimer); ebsfUniversalFightTimer=null; }, 1000*60*6);
+
+    try{
+      if(ebsfUniversalFightObs) ebsfUniversalFightObs.disconnect();
+      ebsfUniversalFightObs = new MutationObserver(()=>detectFightEndAndAutoSave());
+      ebsfUniversalFightObs.observe(document.body, {childList:true, subtree:true, characterData:true});
+      setTimeout(()=>ebsfUniversalFightObs?.disconnect(), 1000*60*6);
+    }catch(e){}
+  }
+
+  function startUniversalFightWatcherIfPending(){
+    const pending = readRememberedAttackTarget?.();
+    if(!pending) return;
+    const clicked = Number(GM_getValue('ebsf_attack_click_ts', 0) || 0);
+    if(clicked && Date.now() - clicked < 1000*60*15){
+      startUniversalFightWatcher();
+    }
+  }
+
+
   function watchAttackPage(){
-    if(!location.href.includes('loader.php') || !location.href.includes('sid=attack')) return;
+    const attackish = location.href.includes('sid=attack') || /attack|fight/i.test(location.href) || /fight|attack|mug|hospital/i.test((document.body?.innerText || '').slice(0, 1500));
+    if(!attackish && !readRememberedAttackTarget?.()) return;
 
     const urlId = new URL(location.href).searchParams.get('user2ID') || new URL(location.href).searchParams.get('userID') || new URL(location.href).searchParams.get('targetID');
     if(urlId){
-      const saved = safeJson(GM_getValue(S.lastAttack, null));
-      if(!saved || String(saved.id)!==String(urlId)){
-        GM_setValue(S.lastAttack, JSON.stringify({id:Number(urlId), name:'Enemy', ts:Date.now()}));
-      }
+      rememberAttackTarget(Number(urlId), 'Enemy');
     }
 
-    let tries=0;
-    const timer=setInterval(()=>{
-      tries++;
-      detectFightEndAndAutoSave();
-      if(tries>120) clearInterval(timer);
-    }, 1250);
-
-    const obs = new MutationObserver(()=>detectFightEndAndAutoSave());
-    obs.observe(document.body, {childList:true, subtree:true, characterData:true});
-    setTimeout(()=>obs.disconnect(), 180000);
+    startUniversalFightWatcher();
   }
 
   function detectFightEndAndAutoSave(){
-    let saved = readRememberedAttackTarget();
+    let saved = readRememberedAttackTarget?.();
     if(!saved || !saved.id){
-      const found = detectTargetFromPage();
+      const found = detectTargetFromPage?.();
       if(found){
         saved = {id:found.id, name:found.name||'Enemy', ts:Date.now()};
         rememberAttackTarget(saved.id, saved.name);
@@ -1281,35 +1313,40 @@
       }
     }
 
-    const bodyText = (document.body?.innerText || '');
+    const bodyTextRaw = (document.body?.innerText || '');
+    const bodyText = bodyTextRaw.replace(/\s+/g, ' ');
     const text = bodyText.toLowerCase();
 
     const winWords = [
       'you won',
       'you have won',
       'you mugged',
-      'mugged',
-      'hospitalized',
+      'you hospitalize',
       'you hospitalized',
-      'left them',
       'you left',
-      'you beat',
       'you defeated',
-      'victory'
+      'you beat',
+      'victory',
+      'you gained',
+      'respect gained',
+      'experience gained',
+      'you leave',
+      'you have mugged'
     ];
     const lossWords = [
       'you lost',
+      'you have lost',
       'you were defeated',
       'defeated by',
-      'you have lost',
-      'stalemate',
+      'you were hospitalized',
       'you ran away',
-      'you were hospitalized'
+      'stalemate',
+      'you failed'
     ];
 
     const won = winWords.some(w=>text.includes(w));
     const lost = lossWords.some(w=>text.includes(w));
-    const ended = won || lost || /fight over|result|continue|leave them|mug|hospital/i.test(bodyText);
+    const ended = won || lost || /fight over|result|continue|leave them|mug|hospital|respect gained|experience gained|you gained/i.test(bodyText);
     if(!ended) return;
 
     const resultSide = won ? 'win' : lost ? 'loss' : 'unknown';
@@ -1322,7 +1359,8 @@
     const detail = extractFightDetails(text);
     detail.resultSide = resultSide;
     const result = classifyFightResult(text, won, detail);
-    autoSaveFightResult(saved.id, saved.name || 'Enemy', result, false, detail);
+
+    autoSaveFightResult(saved.id, saved.name || getPageProfileName?.() || 'Enemy', result, false, detail);
   }
 
   function detectTargetFromPage(){
@@ -1487,19 +1525,60 @@
       attacker_total:app.total,
       target_id:targetId,
       target_name:targetName,
-      result
+      result,
+      fight_meta: detail || {},
+      detected_confidence: (detail && detail.quality) || 55,
+      result_source: manualButton ? 'manual' : 'auto'
     });
 
     if(r.ok){
-      toast(`⚔️ Auto learned ${targetName} [${targetId}] as ${prettyResult(result)} (${Math.round((detail&&detail.quality)||55)}% read). Prediction updating...`);
-      await refreshSingleIntel(targetId, true);
+      toast(`⚔️ Learned ${targetName} [${targetId}] as ${prettyResult(result)}. Updating badge...`);
+      const p = await refreshSingleIntel(targetId, true);
+      if(!p){
+        // Backend may not return a stat instantly if confidence is weak. Cache a broad fallback so N/A changes.
+        const fallback = makeLocalFallbackIntel(result, targetId);
+        if(fallback) saveCachedIntel(targetId, fallback);
+      }
       clearBadgeMarkers?.();
+      buildBadgeNameMap?.();
       scheduleBadgePaint?.('scan');
-      setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1500);
+          setTimeout(()=>paintHonorBadgesOnly?.(), 600);
+      setTimeout(()=>paintHonorBadgesOnly?.(), 600);
+      setTimeout(()=>{ if(app.key && app.user && app.enemyFaction) scan(); }, 1800);
       return true;
     }
     toast('⚔️ Auto learning failed: '+JSON.stringify(r.error||r));
     return false;
+  }
+
+  function makeLocalFallbackIntel(result, targetId){
+    const t = Number(String(app.total || GM_getValue(S.total, '') || '').replace(/,/g,''));
+    if(!t) return null;
+
+    let low = null, high = null;
+    if(result === 'easy_win'){
+      low = t * 0.10; high = t * 0.85;
+    }else if(['close_win','generic_win','auto_win'].includes(result)){
+      low = t * 0.75; high = t * 1.08;
+    }else if(['close_loss','generic_loss','auto_loss'].includes(result)){
+      low = t * 0.95; high = t * 1.35;
+    }else if(result === 'hard_loss'){
+      low = t * 1.20; high = t * 1.90;
+    }else{
+      return null;
+    }
+
+    return {
+      user_id: targetId,
+      total: Math.round((low + high) / 2),
+      best_total: Math.round((low + high) / 2),
+      range_low: Math.round(low),
+      range_high: Math.round(high),
+      label: 'Unknown',
+      confidence: 35,
+      source: 'local_learning',
+      source_detail: 'local post-fight fallback'
+    };
   }
 
   function toast(message){
@@ -1549,7 +1628,8 @@
         if(repaint){
           clearBadgeMarkers?.();
           scheduleBadgePaint?.('scan');
-          paintProfilePageBadge?.();
+          setTimeout(()=>paintHonorBadgesOnly?.(), 600);
+          paintHonorBadgesOnly?.();
         }
       }
       return p || null;
