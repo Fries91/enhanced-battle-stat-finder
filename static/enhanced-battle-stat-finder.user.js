@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.1.3
-// @description  Full-feature balanced PDA build: colored badges, popup intel, Feed the Finder panel, own-profile draggable icon, and smoother repainting.
+// @version      2.1.5
+// @description  Full-feature balanced PDA build with risk-adjusted confidence, restored faction row badges, colored popup, and smoother repainting.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -2219,5 +2219,390 @@
   absp213MakeDraggable();
   absp213ForceIcon();
   absp213SchedulePaint(300);
+
+
+
+  /* v2.1.4 Row restore patch
+     Problem fixed:
+     - PDA faction/hospital/jail enemy rows were being skipped because row structure is inconsistent.
+     - Profile badges worked, but faction rows had no badge.
+     Solution:
+     - Find honor/name plates directly inside the enemy list/table area.
+     - Attach only inside the left/member honor plate, never Attack/Status/Score/header.
+     - Keep one throttled repaint, no aggressive loop.
+  */
+
+  function absp214PageLooksLikeFactionList(){
+    const text = (document.body?.innerText || '').slice(0, 9000);
+    return /factions\.php/i.test(location.href) ||
+           /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain|Okay\s+Attack/i.test(text);
+  }
+
+  function absp214BadContextText(text){
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    return /Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:|Score\s+Status|Status\s+Attack/i.test(text) ||
+           /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
+  }
+
+  function absp214LooksLikeHonorPlate(el){
+    if(!el || el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) return false;
+    const r = el.getBoundingClientRect?.();
+    if(!r) return false;
+
+    // PDA honor bars are usually left-side, wide/short image/name plates.
+    if(r.width < 70 || r.width > 290 || r.height < 12 || r.height > 70) return false;
+    if(r.bottom < -80 || r.top > window.innerHeight + 700) return false;
+
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if(/Score|Status|Attack|Okay|Members|Lead Target/i.test(text) && text.length < 50) return false;
+
+    const cls = String(el.className || '').toLowerCase();
+    const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+    if(cls.includes('honor') || cls.includes('name')) return true;
+    if(st.includes('background-image')) return true;
+    if(el.tagName === 'IMG') return true;
+    if(el.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]')) return true;
+
+    return false;
+  }
+
+  function absp214FindRowForPlate(plate){
+    if(!plate) return null;
+
+    let node = plate;
+    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      const r = node.getBoundingClientRect?.();
+      if(!r || r.width < 180 || r.height < 18) continue;
+
+      // Real enemy rows contain status/attack or the score cell nearby.
+      if(/\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text) && !absp214BadContextText(text)){
+        return node;
+      }
+    }
+
+    return plate.parentElement || plate;
+  }
+
+  function absp214PlateIsLeftMemberArea(plate, row){
+    const pr = plate.getBoundingClientRect?.();
+    const rr = row?.getBoundingClientRect?.();
+    if(!pr || !rr) return false;
+
+    // Must live in the left/member side. This prevents badges in Attack column.
+    if(pr.left > rr.left + rr.width * 0.60) return false;
+
+    // Ignore the faction/team header bars.
+    const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
+    if(absp214BadContextText(rowText)) return false;
+
+    return true;
+  }
+
+  function absp214TargetIdForPlate(plate, row){
+    const blob = [
+      location.href,
+      plate?.innerHTML,
+      plate?.parentElement?.innerHTML,
+      row?.innerHTML
+    ].filter(Boolean).join(' ');
+    return typeof extractId === 'function' ? extractId(blob) : null;
+  }
+
+  function absp214IntelFromKnown(id){
+    if(!id) return null;
+    try{
+      if(typeof getIntel === 'function'){
+        const own = getIntel(id);
+        if(own) return own;
+      }
+    }catch(e){}
+    try{
+      if(typeof bsfGetBspCacheIntel === 'function'){
+        const bsp = bsfGetBspCacheIntel(id);
+        if(bsp) return bsp;
+      }
+    }catch(e){}
+    try{
+      if(typeof bspIntel === 'function'){
+        const bsp2 = bspIntel(id);
+        if(bsp2) return bsp2;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function absp214CreateOrUpdateBadge(plate, intel, id){
+    if(!plate) return;
+
+    let badge = plate.querySelector(':scope > .ebsf2-badge');
+    if(!badge){
+      badge = document.createElement('span');
+      badge.className = 'ebsf2-badge';
+      const cs = getComputedStyle(plate);
+      if(cs.position === 'static') plate.style.position = 'relative';
+      plate.appendChild(badge);
+    }
+
+    if(typeof updateBadge === 'function') updateBadge(badge, intel);
+    else {
+      badge.textContent = intel?.total ? String(intel.total) : 'N/A';
+    }
+
+    if(id) badge.dataset.targetId = String(id);
+    badge.dataset.absp214 = '1';
+    badge.style.pointerEvents = 'auto';
+    badge.style.cursor = 'pointer';
+  }
+
+  async function absp214FetchIntelIfMissing(id){
+    if(!id || !app?.key) return null;
+    try{
+      if(typeof req === 'function'){
+        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
+        if(r?.ok && r.player){
+          if(typeof saveIntel === 'function') saveIntel(id, r.player);
+          return r.player;
+        }
+      }
+    }catch(e){}
+    return null;
+  }
+
+  async function absp214PaintVisiblePlates(){
+    if(!absp214PageLooksLikeFactionList()) return;
+
+    const candidates = [
+      ...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]')
+    ];
+
+    let painted = 0;
+    const seenRows = new Set();
+
+    for(const raw of candidates){
+      if(painted >= 85) break;
+
+      // Prefer plate parent when the image itself is inside the plate.
+      let plate = raw;
+      const parent = raw.parentElement;
+      if(parent && absp214LooksLikeHonorPlate(parent)) plate = parent;
+
+      if(!absp214LooksLikeHonorPlate(plate)) continue;
+
+      const row = absp214FindRowForPlate(plate);
+      if(!row || !absp214PlateIsLeftMemberArea(plate, row)) continue;
+
+      const rr = row.getBoundingClientRect?.();
+      const key = rr ? `${Math.round(rr.top)}:${Math.round(rr.left)}:${Math.round(rr.width)}` : row.outerHTML.slice(0,50);
+      if(seenRows.has(key)) continue;
+      seenRows.add(key);
+
+      const id = absp214TargetIdForPlate(plate, row);
+      let intel = absp214IntelFromKnown(id);
+
+      // If BSP/FF data is visible in the page but no ID was captured, still show N/A on plate.
+      absp214CreateOrUpdateBadge(plate, intel, id);
+      painted++;
+
+      if(id && !intel){
+        absp214FetchIntelIfMissing(id).then(found=>{
+          if(found) absp214CreateOrUpdateBadge(plate, found, id);
+        });
+      }
+    }
+
+    absp214CleanBadges();
+  }
+
+  function absp214CleanBadges(){
+    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
+      if(b.closest?.('.ebsf2-pop')) return;
+
+      const plate = b.parentElement;
+      const row = absp214FindRowForPlate(plate);
+
+      if(absp214PageLooksLikeFactionList()){
+        if(!plate || !row || !absp214LooksLikeHonorPlate(plate) || !absp214PlateIsLeftMemberArea(plate,row)){
+          b.remove();
+        }
+      }
+    });
+  }
+
+  // Override older row painters with the restored plate painter.
+  if(typeof absp213PaintFactionRows === 'function') absp213PaintFactionRows = absp214PaintVisiblePlates;
+  if(typeof ebsf211PaintFactionRows === 'function') ebsf211PaintFactionRows = absp214PaintVisiblePlates;
+  if(typeof ebsf210PaintFactionRows === 'function') ebsf210PaintFactionRows = absp214PaintVisiblePlates;
+  if(typeof ebsf208PaintFactionRows === 'function') ebsf208PaintFactionRows = absp214PaintVisiblePlates;
+
+  const absp214OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
+  if(absp214OldPaintAll && !window.__absp214PaintWrapped){
+    window.__absp214PaintWrapped = true;
+    paintAll = async function(force){
+      let out;
+      try{
+        if(!absp214PageLooksLikeFactionList()) out = await absp214OldPaintAll(force);
+      }catch(e){}
+      await absp214PaintVisiblePlates();
+      if(typeof absp213ForceIcon === 'function') absp213ForceIcon();
+      return out;
+    };
+  }
+
+  function absp214Schedule(delay=500){
+    clearTimeout(window.__absp214Timer);
+    window.__absp214Timer = setTimeout(()=>absp214PaintVisiblePlates(), delay);
+  }
+
+  if(!window.__absp214Observer){
+    window.__absp214Observer = true;
+
+    [400, 1200, 2500, 5000].forEach(t=>setTimeout(()=>absp214Schedule(50), t));
+
+    try{
+      const obs = new MutationObserver(()=>absp214Schedule(650));
+      obs.observe(document.body, {childList:true, subtree:true});
+    }catch(e){}
+
+    let last = location.href;
+    setInterval(()=>{
+      if(location.href !== last){
+        last = location.href;
+        absp214Schedule(600);
+      }
+    }, 1500);
+  }
+
+  absp214Schedule(250);
+
+
+
+  /* v2.1.5 Risk-adjusted confidence
+     Fix:
+     - Avoid targets should not show high confidence just because FF/BSP has a number.
+     - The higher the target stats are above yours, the lower the displayed confidence.
+     - Spy/manual exact intel can stay stronger.
+  */
+
+  function absp215SourceIsExact(intel){
+    const s = String(intel?.source || '').toLowerCase();
+    return s.includes('spy') || s.includes('manual') || s.includes('exact');
+  }
+
+  function absp215RiskAdjustedConfidence(intel){
+    let conf = Number(intel?.confidence || 0);
+    const total = Number(intel?.best_total || intel?.total || 0);
+    const mine = Number(app?.total || 0);
+
+    if(!total || !mine) return conf;
+
+    // Exact sources are trusted more, but still cap impossible-range confidence slightly.
+    const exact = absp215SourceIsExact(intel);
+    const ratio = total / mine;
+
+    if(exact){
+      if(ratio >= 10) conf = Math.min(conf || 75, 75);
+      else if(ratio >= 5) conf = Math.min(conf || 80, 80);
+      return Math.max(1, Math.min(100, Math.round(conf)));
+    }
+
+    // Risk/out-of-range caps for estimates.
+    // This makes "Avoid" stop looking like a sure prediction.
+    let cap = 100;
+    if(ratio >= 20) cap = 18;       // wildly above you
+    else if(ratio >= 10) cap = 25;  // massive avoid
+    else if(ratio >= 5) cap = 35;   // strong avoid
+    else if(ratio >= 2.5) cap = 45; // avoid/difficult edge
+    else if(ratio >= 1.75) cap = 55;// difficult
+    else if(ratio >= 1.15) cap = 65;// fair/good-ish upper
+    else cap = 78;                  // easy/fair can stay decent
+
+    if(!conf) conf = cap;
+    conf = Math.min(conf, cap);
+
+    return Math.max(1, Math.min(100, Math.round(conf)));
+  }
+
+  function absp215RiskLabel(intel){
+    const total = Number(intel?.best_total || intel?.total || 0);
+    const mine = Number(app?.total || 0);
+    if(!total || !mine) return '';
+    const ratio = total / mine;
+    if(ratio >= 10) return 'Very high gap';
+    if(ratio >= 5) return 'High stat gap';
+    if(ratio >= 2.5) return 'Big stat gap';
+    if(ratio >= 1.75) return 'Risky';
+    return '';
+  }
+
+  // Patch badge title confidence.
+  const absp215OldUpdateBadge = typeof updateBadge === 'function' ? updateBadge : null;
+  if(absp215OldUpdateBadge){
+    updateBadge = function(b, intel){
+      if(intel){
+        intel = {...intel, confidence: absp215RiskAdjustedConfidence(intel)};
+      }
+      absp215OldUpdateBadge(b, intel);
+    };
+  }
+
+  // Patch popup confidence display by overriding ebsf203Conf, if that full popup path exists.
+  if(typeof ebsf203Conf === 'function'){
+    const absp215OldConf = ebsf203Conf;
+    ebsf203Conf = function(conf){
+      // Direct confidence calls do not include total, so this is only a fallback.
+      const c = Math.max(0, Math.min(100, Math.round(Number(conf || 0))));
+      return absp215OldConf(c);
+    };
+  }
+
+  // Patch popup maker for v2.0.3+ full popup path.
+  if(typeof ebsf202MakePopup === 'function'){
+    const absp215OldPopup = ebsf202MakePopup;
+    ebsf202MakePopup = function(targetId, intel, anchor){
+      if(intel){
+        intel = {...intel, confidence: absp215RiskAdjustedConfidence(intel)};
+      }
+      absp215OldPopup(targetId, intel, anchor);
+
+      const pop = document.querySelector('.ebsf2-pop');
+      const note = absp215RiskLabel(intel);
+      if(pop && note && !pop.querySelector('.absp215-risk-note')){
+        const body = pop.querySelector('.ebsf2-pop-body');
+        if(body){
+          const div = document.createElement('div');
+          div.className = 'absp215-risk-note';
+          div.style.cssText = 'margin-top:7px;padding:6px;border-radius:8px;background:#431407;color:#fdba74;border:1px solid #f97316;font-weight:900';
+          div.textContent = 'Confidence reduced: ' + note;
+          body.appendChild(div);
+        }
+      }
+    };
+  }
+
+  // Patch generic popup path from balanced direct badge intel, if present.
+  if(typeof ebsf202BadgeIntelFromElement === 'function'){
+    const absp215OldBadgeIntel = ebsf202BadgeIntelFromElement;
+    ebsf202BadgeIntelFromElement = function(badge){
+      const got = absp215OldBadgeIntel(badge);
+      if(got?.intel){
+        got.intel = {...got.intel, confidence: absp215RiskAdjustedConfidence(got.intel)};
+      }
+      return got;
+    };
+  }
+
+  // Adjust stored visible/BSP intel as it is saved.
+  if(typeof saveIntel === 'function' && !window.__absp215SaveIntelWrapped){
+    window.__absp215SaveIntelWrapped = true;
+    const absp215OldSaveIntel = saveIntel;
+    saveIntel = function(id, intel){
+      if(intel){
+        intel = {...intel, confidence: absp215RiskAdjustedConfidence(intel)};
+      }
+      return absp215OldSaveIntel(id, intel);
+    };
+  }
 
 })();
