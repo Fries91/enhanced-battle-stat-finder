@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.1.7
-// @description  Full-feature balanced PDA build with global honor-bar support for faction, hospital, jail, travel, profiles, colored popup, and smoother repainting.
+// @version      2.1.9
+// @description  Balanced PDA build with stable faction chat badges, real honor-bar badges, no orphan header badges, colored popup, and smoother repainting.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -3162,5 +3162,442 @@
   }
 
   absp217Schedule(250);
+
+
+
+  /* v2.1.8 No-chat / no-orphan badge guard
+     Fixes:
+     - Global honor painter was catching faction chat avatars/names on Home.
+     - Removes blinking N/A boxes from chat popup and empty Faction header spots.
+     - Requires real player/profile context outside profile pages.
+     - Keeps real faction/hospital/jail/profile honor bars.
+  */
+
+  function absp218IsHomeOrChatArea(el){
+    if(!el) return false;
+
+    const text = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+    const pageText = (document.body?.innerText || '').slice(0, 4000);
+
+    // Home page chat popup / faction chat message list clues.
+    if(/Type your message here|Faction\s*$|Good job!|Join an organized crime|No active chain/i.test(text)) return true;
+
+    // If the current page is Home and the element is inside the floating chat area, block it.
+    if(/Home/i.test(document.title || '') && /Type your message here|Faction/i.test(pageText)){
+      const r = el.getBoundingClientRect?.();
+      if(r && r.left > window.innerWidth * 0.25 && r.top > 250) return true;
+    }
+
+    // Class/id clues for chat panels.
+    let node = el;
+    for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
+      const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
+      if(/chat|message|msg|conversation|dialog|popup|modal/.test(ident)) return true;
+      const nt = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if(/Type your message here|Faction\s*$/.test(nt) && nt.length < 2000) return true;
+    }
+
+    return false;
+  }
+
+  function absp218AllowedPageForGlobalHonor(){
+    const url = location.href;
+    const title = document.title || '';
+    const text = (document.body?.innerText || '').slice(0, 7000);
+
+    // Never run global honor painter on Home/chat; faction rows have their own painter.
+    if(/^Home$/i.test(title.trim()) || /home/i.test(url)) {
+      return false;
+    }
+
+    return /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(url) ||
+           /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(text);
+  }
+
+  function absp218HasRealPlayerContext(mount){
+    if(!mount) return false;
+
+    // Profile page can use profile XID or page profile.
+    if(/profiles\.php/i.test(location.href)) return true;
+
+    // Outside profiles, require a real nearby profile/attack link.
+    const id = typeof absp217ExtractIdNear === 'function'
+      ? absp217ExtractIdNear(mount)
+      : (typeof extractId === 'function' ? extractId(mount.outerHTML || '') : null);
+
+    return !!id;
+  }
+
+  function absp218RemoveBadBadges(){
+    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
+      if(b.closest?.('.ebsf2-pop')) return;
+
+      const mount = b.parentElement;
+      if(!mount) return;
+
+      if(absp218IsHomeOrChatArea(mount) || absp218IsHomeOrChatArea(b)){
+        b.remove();
+        return;
+      }
+
+      // Remove orphan badges without target/player context, unless it is a profile page badge.
+      const hasId = !!b.dataset.targetId || absp218HasRealPlayerContext(mount);
+      if(!hasId){
+        b.remove();
+        return;
+      }
+
+      // Remove top/header orphan bars.
+      const text = (mount.textContent || mount.parentElement?.textContent || '').replace(/\s+/g,' ').trim();
+      if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Members\s+Score|Status\s+Attack/i.test(text)){
+        b.remove();
+      }
+    });
+  }
+
+  // Override global painter with chat/home guard.
+  if(typeof absp217PaintGlobalHonorBars === 'function'){
+    const absp218OldGlobal = absp217PaintGlobalHonorBars;
+    absp217PaintGlobalHonorBars = async function(){
+      if(!absp218AllowedPageForGlobalHonor()){
+        absp218RemoveBadBadges();
+        return;
+      }
+      await absp218OldGlobal();
+      absp218RemoveBadBadges();
+    };
+  }
+
+  // Guard update mount so chat/home badges never get created.
+  if(typeof absp217UpdateMount === 'function' && !window.__absp218UpdateGuarded){
+    window.__absp218UpdateGuarded = true;
+    const oldUpdate218 = absp217UpdateMount;
+    absp217UpdateMount = function(mount, intel, id){
+      if(absp218IsHomeOrChatArea(mount)) return;
+      if(!/profiles\.php/i.test(location.href) && !id) return;
+      return oldUpdate218(mount, intel, id);
+    };
+  }
+
+  // Guard older attach too, so old painters cannot create chat/header badges.
+  if(typeof attach === 'function' && !window.__absp218AttachGuarded){
+    window.__absp218AttachGuarded = true;
+    const oldAttach218 = attach;
+    attach = function(mount, intel){
+      if(absp218IsHomeOrChatArea(mount)) return;
+
+      // On home/chat pages, do not attach anywhere.
+      if(!absp218AllowedPageForGlobalHonor() && !/factions\.php/i.test(location.href)) return;
+
+      return oldAttach218(mount, intel);
+    };
+  }
+
+  function absp218Schedule(delay=500){
+    clearTimeout(window.__absp218Timer);
+    window.__absp218Timer = setTimeout(()=>absp218RemoveBadBadges(), delay);
+  }
+
+  if(!window.__absp218Started){
+    window.__absp218Started = true;
+
+    [300, 1000, 2500, 5000].forEach(t=>setTimeout(()=>absp218RemoveBadBadges(), t));
+
+    try{
+      const obs = new MutationObserver(()=>absp218Schedule(650));
+      obs.observe(document.body, {childList:true, subtree:true});
+    }catch(e){}
+
+    let last = location.href;
+    setInterval(()=>{
+      if(location.href !== last){
+        last = location.href;
+        setTimeout(absp218RemoveBadBadges, 700);
+      }
+    }, 1800);
+  }
+
+  absp218RemoveBadBadges();
+
+
+
+  /* v2.1.9 Stable faction chat badges + smoother cleanup
+     Keeps:
+     - Faction chat badges on real chat user names.
+     - Faction/war, hospital, jail, travel, and profile honor badges.
+     Fixes:
+     - No empty/orphan badge by the Faction title.
+     - No blinking from removing/recreating badges.
+     - Chat badges require a real nearby profile/player ID.
+  */
+
+  function absp219ExtractIdNear(el){
+    if(!el || typeof extractId !== 'function') return null;
+
+    const links = [
+      ...(el.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
+      ...(el.parentElement?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
+      ...(el.closest?.('div,li,tr')?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || [])
+    ];
+
+    for(const a of links){
+      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
+      if(id) return Number(id);
+    }
+
+    let node = el;
+    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
+      const blob = [
+        node.getAttribute?.('href'),
+        node.getAttribute?.('onclick'),
+        node.getAttribute?.('data-user'),
+        node.getAttribute?.('data-userid'),
+        node.getAttribute?.('data-id'),
+        node.innerHTML
+      ].filter(Boolean).join(' ');
+      const id = extractId(blob);
+      if(id) return Number(id);
+    }
+
+    return null;
+  }
+
+  function absp219IsChatContainer(el){
+    let node = el;
+    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
+      const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
+      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if(/chat|message|msg|conversation/.test(ident)) return true;
+      if(/Type your message here/.test(text)) return true;
+      if(/^Faction\s+.+Type your message here/i.test(text)) return true;
+    }
+    return false;
+  }
+
+  function absp219IsFactionChatName(el){
+    if(!el || !absp219IsChatContainer(el)) return false;
+
+    const id = absp219ExtractIdNear(el);
+    if(!id) return false;
+
+    const r = el.getBoundingClientRect?.();
+    if(!r || r.width < 28 || r.width > 260 || r.height < 10 || r.height > 60) return false;
+    if(r.bottom < -80 || r.top > window.innerHeight + 650) return false;
+
+    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+
+    if(!text || text.length > 90) return false;
+    if(/Type your message here|Faction$|Home|Messages|Events/i.test(text)) return false;
+
+    const hasProfileLink =
+      el.matches?.('a[href*="profiles.php"],a[href*="XID="]') ||
+      !!el.querySelector?.('a[href*="profiles.php"],a[href*="XID="]') ||
+      !!el.closest?.('a[href*="profiles.php"],a[href*="XID="]');
+
+    return hasProfileLink || !!id;
+  }
+
+  function absp219ChatMount(raw){
+    if(!raw) return null;
+
+    let mount = raw.closest?.('a[href*="profiles.php"],a[href*="XID="]') || raw;
+    const p = mount.parentElement;
+
+    if(p){
+      const pr = p.getBoundingClientRect?.();
+      const mr = mount.getBoundingClientRect?.();
+      const pt = (p.textContent || '').replace(/\s+/g, ' ').trim();
+      if(pr && mr && pr.width <= 280 && pr.height <= 70 && pt.length <= 110 && !/Type your message here/i.test(pt)){
+        mount = p;
+      }
+    }
+
+    return mount;
+  }
+
+  function absp219KnownIntel(id){
+    if(!id) return null;
+    try{
+      if(typeof getIntel === 'function'){
+        const cached = getIntel(id);
+        if(cached) return cached;
+      }
+    }catch(e){}
+    try{
+      if(typeof bspIntel === 'function'){
+        const bsp = bspIntel(id);
+        if(bsp) return bsp;
+      }
+    }catch(e){}
+    try{
+      if(typeof bsfGetBspCacheIntel === 'function'){
+        const bsp2 = bsfGetBspCacheIntel(id);
+        if(bsp2) return bsp2;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function absp219UpdateBadgeInPlace(mount, intel, id, kind){
+    if(!mount || !id) return;
+
+    let b = mount.querySelector(':scope > .ebsf2-badge');
+    if(!b){
+      b = document.createElement('span');
+      b.className = 'ebsf2-badge';
+      const cs = getComputedStyle(mount);
+      if(cs.position === 'static') mount.style.position = 'relative';
+      mount.appendChild(b);
+    }
+
+    [...mount.querySelectorAll(':scope > .ebsf2-badge')].slice(1).forEach(x=>x.remove());
+
+    if(typeof updateBadge === 'function') updateBadge(b, intel);
+    else b.textContent = intel?.total ? String(intel.total) : 'N/A';
+
+    b.dataset.targetId = String(id);
+    b.dataset.absp219 = kind || 'badge';
+    b.style.pointerEvents = 'auto';
+    b.style.cursor = 'pointer';
+  }
+
+  async function absp219FetchLater(id, mount, kind){
+    if(!id || !app?.key || !mount) return;
+    try{
+      if(typeof req === 'function'){
+        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
+        if(r?.ok && r.player){
+          if(typeof saveIntel === 'function') saveIntel(id, r.player);
+          absp219UpdateBadgeInPlace(mount, r.player, id, kind);
+        }
+      }
+    }catch(e){}
+  }
+
+  async function absp219PaintFactionChatBadges(){
+    const text = (document.body?.innerText || '').slice(0, 5000);
+    if(!/Type your message here|Faction/i.test(text)) return;
+
+    const candidates = [
+      ...document.querySelectorAll('a[href*="profiles.php"],a[href*="XID="],[onclick*="profiles.php"],[data-userid],[data-user]')
+    ];
+
+    const seen = new Set();
+    let painted = 0;
+
+    for(const raw of candidates){
+      if(painted >= 60) break;
+      if(!absp219IsFactionChatName(raw)) continue;
+
+      const id = absp219ExtractIdNear(raw);
+      if(!id || seen.has(id)) continue;
+
+      const mount = absp219ChatMount(raw);
+      if(!mount) continue;
+
+      const intel = absp219KnownIntel(id);
+      absp219UpdateBadgeInPlace(mount, intel, id, 'chat');
+      seen.add(id);
+      painted++;
+
+      if(!intel) absp219FetchLater(id, mount, 'chat');
+    }
+  }
+
+  function absp219IsOrphanHeaderBadge(b){
+    const mount = b?.parentElement;
+    if(!mount) return true;
+
+    const text = (mount.textContent || mount.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+
+    if(!b.dataset.targetId) return true;
+    if(/^Faction\s*N\/A?$/i.test(text)) return true;
+    if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Members\s+Score|Status\s+Attack/i.test(text)) return true;
+
+    return false;
+  }
+
+  function absp219CleanOnlyBadStuff(){
+    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
+      if(b.closest?.('.ebsf2-pop')) return;
+
+      if(absp219IsOrphanHeaderBadge(b)){
+        b.remove();
+        return;
+      }
+
+      const mount = b.parentElement;
+      const kind = b.dataset.absp219 || '';
+
+      if(kind === 'chat'){
+        if(!b.dataset.targetId || !absp219IsChatContainer(mount)){
+          b.remove();
+        }
+      }
+    });
+  }
+
+  if(typeof absp218IsHomeOrChatArea === 'function'){
+    absp218IsHomeOrChatArea = function(el){
+      if(absp219IsFactionChatName(el)) return false;
+
+      let node = el;
+      for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
+        const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
+        const nt = (node.textContent || '').replace(/\s+/g, ' ').trim();
+        if(/chat|message|msg|conversation|dialog|popup|modal/.test(ident) && !absp219ExtractIdNear(node)) return true;
+        if(/Type your message here|Faction\s*$/.test(nt) && nt.length < 2000 && !absp219ExtractIdNear(node)) return true;
+      }
+      return false;
+    };
+  }
+
+  async function absp219PaintAll(){
+    try{
+      if(typeof absp217PaintGlobalHonorBars === 'function') await absp217PaintGlobalHonorBars();
+    }catch(e){}
+    try{
+      if(typeof absp216PaintFactionBadges === 'function') await absp216PaintFactionBadges();
+    }catch(e){}
+    await absp219PaintFactionChatBadges();
+    absp219CleanOnlyBadStuff();
+  }
+
+  function absp219Schedule(delay=650){
+    clearTimeout(window.__absp219Timer);
+    window.__absp219Timer = setTimeout(()=>absp219PaintAll(), delay);
+  }
+
+  const absp219OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
+  if(absp219OldPaintAll && !window.__absp219PaintWrapped){
+    window.__absp219PaintWrapped = true;
+    paintAll = async function(force){
+      let out;
+      try{ out = await absp219OldPaintAll(force); }catch(e){}
+      await absp219PaintAll();
+      return out;
+    };
+  }
+
+  if(!window.__absp219Started){
+    window.__absp219Started = true;
+
+    [500, 1500, 3500, 6500].forEach(t=>setTimeout(()=>absp219Schedule(80), t));
+
+    try{
+      const obs = new MutationObserver(()=>absp219Schedule(850));
+      obs.observe(document.body, {childList:true, subtree:true});
+    }catch(e){}
+
+    let last = location.href;
+    setInterval(()=>{
+      if(location.href !== last){
+        last = location.href;
+        absp219Schedule(700);
+      }
+    }, 2000);
+  }
+
+  absp219Schedule(250);
 
 })();
