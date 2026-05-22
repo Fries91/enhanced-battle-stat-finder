@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.7
-// @description  Honor-bar prediction badges with safer attack remembering, persistent FF/BSP estimate bridge, backup save, and automatic learning.
+// @version      1.3.8
+// @description  Stable Torn PDA badge engine: tab-safe repainting, FF/BSP estimate bridge, safer attack learning, and backup save.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -99,6 +99,7 @@
   `);
 
   boot();
+  ebsf138Start?.();
   bsfInstallNetworkWatch?.();
   setTimeout(()=>paintHonorBadgesOnly(), 2500);
   setupStrongAttackRemembering();
@@ -2468,5 +2469,321 @@ try{
 
   bsfInstallSafeAttackRememberingV137();
   bsfStartPersistentEstimateBridgeV137();
+
+
+
+  /* v1.3.8 Stable PDA badge engine.
+     Purpose:
+     - Torn PDA swaps tabs/pages without reload; stale row flags caused missing badges.
+     - This engine repaints visible rows fresh, but still keeps one badge per honor/name plate.
+     - Attack remembering is strict: only attack links/buttons.
+  */
+
+  function ebsf138ParseStatText(input){
+    if(input == null) return 0;
+    const s = String(input).replace(/,/g,'').trim().toLowerCase();
+    const m = s.match(/([0-9]+(?:\.[0-9]+)?)\s*([kmbt])?/i);
+    if(!m) return 0;
+    let n = Number(m[1]);
+    const u = (m[2] || '').toLowerCase();
+    if(u === 'k') n *= 1e3;
+    if(u === 'm') n *= 1e6;
+    if(u === 'b') n *= 1e9;
+    if(u === 't') n *= 1e12;
+    return Math.round(n);
+  }
+
+  function ebsf138Label(total){
+    const mine = Number(String(app.total || GM_getValue(S.total, '') || '').replace(/,/g,''));
+    if(!mine || !total) return 'Unknown';
+    const r = total / mine;
+    if(r <= .75) return 'Easy';
+    if(r <= 1.10) return 'Fair';
+    if(r <= 1.35) return 'Good';
+    if(r <= 1.75) return 'Difficult';
+    return 'Avoid';
+  }
+
+  function ebsf138Intel(total, source, detail, confidence){
+    total = Number(total || 0);
+    if(!total) return null;
+    return {
+      total,
+      best_total: total,
+      range_low: Math.round(total * .88),
+      range_high: Math.round(total * 1.12),
+      label: ebsf138Label(total),
+      confidence: confidence || 62,
+      source: source || 'visible_estimate',
+      source_detail: detail || 'visible/cached estimate'
+    };
+  }
+
+  function ebsf138VisibleProfileIntel(){
+    const txt = (document.body?.innerText || '').replace(/\s+/g, ' ');
+    const patterns = [
+      /Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i,
+      /Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i,
+      /Stats:\s*([0-9.,]+\s*[kmbt]?)/i
+    ];
+    for(const p of patterns){
+      const m = txt.match(p);
+      if(m){
+        const total = ebsf138ParseStatText(m[1]);
+        if(total) return ebsf138Intel(total, 'visible_ff_bsp', 'visible FF/BSP estimate', 64);
+      }
+    }
+    return null;
+  }
+
+  function ebsf138BspCacheIntel(id){
+    if(!id) return null;
+    try{
+      const keys = [
+        'tdup.battleStatsPredictor.cache.prediction.' + id,
+        'BSP_prediction_' + id,
+        'battleStatsPredictor_' + id
+      ];
+      for(const k of keys){
+        const raw = localStorage.getItem(k) || GM_getValue?.(k, '');
+        if(!raw) continue;
+        const p = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const total = ebsf138ParseStatText(p.TBS || p.TargetTBS || p.bs_estimate || p.estimate || p.total || p.Total);
+        if(total) return ebsf138Intel(total, 'bsp_cache', 'BSP cached prediction', 65);
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function ebsf138MakeBadge(intel){
+    const b = document.createElement('span');
+    ebsf138UpdateBadge(b, intel);
+    return b;
+  }
+
+  function ebsf138UpdateBadge(b, intel){
+    if(!intel || (!intel.best_total && !intel.total && !intel.range_low && !intel.range_high)){
+      b.className = 'ebsfNameBadge ebsfHonorBadge unknown';
+      b.textContent = 'N/A';
+      b.title = 'No Battle Stat Finder intel yet';
+      return;
+    }
+    const label = String(intel.label || 'Unknown').toLowerCase();
+    b.className = 'ebsfNameBadge ebsfHonorBadge ' + (['easy','fair','good','difficult','avoid'].includes(label) ? label : 'unknown');
+    const val = intel.best_total || intel.total || ((intel.range_low && intel.range_high) ? ((intel.range_low + intel.range_high) / 2) : 0);
+    b.textContent = fmtShort ? fmtShort(val) : String(Math.round(val));
+    b.title = `Battle Stat Finder: ${intel.label || 'Unknown'} • ${fmt ? fmt(val) : val} • ${Math.round(intel.confidence || 0)}%`;
+  }
+
+  function ebsf138Attach(mount, intel){
+    if(!mount) return;
+    let badge = mount.querySelector(':scope > .ebsfNameBadge');
+    if(!badge){
+      badge = ebsf138MakeBadge(intel);
+      const cs = getComputedStyle(mount);
+      if(cs.position === 'static') mount.style.position = 'relative';
+      mount.appendChild(badge);
+    } else {
+      ebsf138UpdateBadge(badge, intel);
+    }
+  }
+
+  function ebsf138IsPageUseful(){
+    const body = (document.body?.innerText || '').slice(0, 5000);
+    return /Members\s+Score|Status\s+Attack|User Information|Medals|Awards|Actions|Profile|Faction/i.test(body) ||
+           /factions\.php|profiles\.php/.test(location.href) ||
+           /Profile|Faction/i.test(document.title || '');
+  }
+
+  function ebsf138FindRows(){
+    const rows = [...document.querySelectorAll('tr, li, [class*="row"], [class*="member"]')];
+    return rows.filter(row=>{
+      const txt = (row.textContent || '').trim();
+      if(!txt || txt.length < 3) return false;
+      const rect = row.getBoundingClientRect?.();
+      if(!rect || rect.width < 140 || rect.height < 14) return false;
+      if(rect.bottom < -150 || rect.top > window.innerHeight + 900) return false;
+      const hasShape = row.querySelectorAll?.('td, [class*="cell"], [class*="column"]').length >= 2;
+      const hasWords = /Okay|Attack|Hospital|Travel|Jail/i.test(txt);
+      const hasHonor = !!row.querySelector?.('img, [style*="background-image"], [class*="honor"], [class*="name"]');
+      return (hasShape && (hasWords || hasHonor)) || (hasWords && hasHonor);
+    }).slice(0, 160);
+  }
+
+  function ebsf138MemberCell(row){
+    const cells = [...(row.querySelectorAll?.('td, [class*="cell"], [class*="column"]') || [])];
+    for(const c of cells.slice(0, 2)){
+      const txt = (c.textContent || '').trim();
+      if(/Score|Status|Attack|Okay/i.test(txt) && txt.length < 30) continue;
+      const r = c.getBoundingClientRect?.();
+      if(r && r.width >= 45 && r.height >= 12) return c;
+    }
+    const children = [...row.children];
+    for(const c of children.slice(0, 4)){
+      const r = c.getBoundingClientRect?.();
+      if(r && r.width >= 45 && r.height >= 12) return c;
+    }
+    return null;
+  }
+
+  function ebsf138HonorMount(scope){
+    if(!scope) return null;
+    const candidates = [...(scope.querySelectorAll?.('[class*="honor"], [class*="name"], [style*="background-image"], img, a[href*="profiles.php"]') || [])];
+    let best = null, score = -999;
+    for(const el of candidates){
+      if(el.closest?.('[class*="score"], [class*="status"], [class*="attack"]')) continue;
+      const r = el.getBoundingClientRect?.();
+      if(!r || r.width < 35 || r.height < 10 || r.width > 360 || r.height > 100) continue;
+      let s = 0;
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute('style') || '').toLowerCase();
+      if(cls.includes('honor')) s += 45;
+      if(cls.includes('name')) s += 30;
+      if(st.includes('background-image')) s += 25;
+      if(el.tagName === 'IMG') s += 20;
+      if(el.href && el.href.includes('profiles.php')) s += 20;
+      s += Math.min(35, r.width / 7);
+      if(s > score){ score = s; best = el; }
+    }
+    if(best && best.parentElement){
+      const pr = best.parentElement.getBoundingClientRect?.();
+      const br = best.getBoundingClientRect?.();
+      if(pr && br && pr.width >= br.width && pr.width <= 390 && pr.height <= 110) return best.parentElement;
+    }
+    return best || scope;
+  }
+
+  function ebsf138IdFrom(row, mount){
+    const blob = [location.href, row?.innerHTML, mount?.innerHTML, row?.textContent, mount?.textContent].filter(Boolean).join(' ');
+    return extractTargetIdFromText?.(blob) || getProfilePageId?.() || detectProfileIdFromPage?.() || findProfileIdFromPageLinks?.();
+  }
+
+  function ebsf138IntelFor(row, mount){
+    const id = ebsf138IdFrom(row, mount);
+    if(id){
+      const own = getCachedIntel?.(id);
+      if(own) return own;
+      const bsp = ebsf138BspCacheIntel(id);
+      if(bsp){ saveCachedIntel?.(id, bsp); return bsp; }
+    }
+    const visible = ebsf138VisibleProfileIntel();
+    if(visible){
+      if(id) saveCachedIntel?.(id, visible);
+      return visible;
+    }
+    return null;
+  }
+
+  function ebsf138PaintProfile(){
+    const body = (document.body?.innerText || '').slice(0, 5000);
+    if(!/User Information|Medals|Awards|Actions|Profile/i.test(body) && !/profiles\.php/.test(location.href) && !/Profile/i.test(document.title || '')) return;
+    const all = [...document.querySelectorAll('img, [style*="background-image"], [class*="honor"], [class*="name"]')];
+    let best = null, score = -999;
+    for(const el of all){
+      if(el.closest?.('#ebsfRoot')) continue;
+      const r = el.getBoundingClientRect?.();
+      if(!r || r.width < 80 || r.height < 10 || r.width > 560 || r.height > 130) continue;
+      if(r.top < 130 || r.top > window.innerHeight + 900) continue;
+      let s = Math.min(50, r.width/8);
+      const cls = String(el.className||'').toLowerCase();
+      const st = String(el.getAttribute('style')||'').toLowerCase();
+      if(cls.includes('honor')) s += 45;
+      if(cls.includes('name')) s += 25;
+      if(st.includes('background-image')) s += 25;
+      if(el.tagName === 'IMG') s += 20;
+      if(s > score){ score = s; best = el; }
+    }
+    if(!best) return;
+    const mount = best.parentElement || best;
+    const intel = ebsf138IntelFor(document.body, mount);
+    ebsf138Attach(mount, intel);
+  }
+
+  function ebsf138PaintRows(){
+    for(const row of ebsf138FindRows()){
+      const cell = ebsf138MemberCell(row);
+      if(!cell) continue;
+      const mount = ebsf138HonorMount(cell);
+      if(!mount) continue;
+      const intel = ebsf138IntelFor(row, mount);
+      ebsf138Attach(mount, intel);
+    }
+  }
+
+  function ebsf138PaintAll(){
+    if(!ebsf138IsPageUseful()) return;
+    // Remove bad old badges outside player cells/profile honor areas.
+    document.querySelectorAll('.ebsfNameBadge').forEach(b=>{
+      if(b.closest?.('[class*="score"], [class*="status"], [class*="attack"]')) b.remove();
+    });
+    ebsf138PaintRows();
+    ebsf138PaintProfile();
+  }
+
+  function ebsf138IsAttackClick(el){
+    if(!el) return false;
+    const href = el.href || el.getAttribute?.('href') || '';
+    const onclick = el.getAttribute?.('onclick') || '';
+    const title = el.getAttribute?.('title') || el.getAttribute?.('aria-label') || '';
+    const txt = (el.textContent || '').trim();
+    if(/sid=attack|user2ID=|attack/i.test(href)) return true;
+    if(/sid=attack|user2ID|attack/i.test(onclick)) return true;
+    if(/^attack$/i.test(txt)) return true;
+    if((el.tagName === 'A' || el.tagName === 'BUTTON') && /attack|fight/i.test([href,onclick,title,txt,String(el.className||'')].join(' '))) return true;
+    return false;
+  }
+
+  function ebsf138InstallAttackWatcher(){
+    if(window.__ebsf138AttackWatcher) return;
+    window.__ebsf138AttackWatcher = true;
+    document.addEventListener('click', e=>{
+      const el = e.target?.closest?.('a,button,[onclick]');
+      if(!el || !ebsf138IsAttackClick(el)) return;
+      const row = el.closest?.('tr, li, [class*="row"], [class*="member"]');
+      const id = extractTargetIdFromText?.([el.href, el.getAttribute?.('href'), el.getAttribute?.('onclick'), row?.innerHTML, location.href].filter(Boolean).join(' ')) || getProfilePageId?.();
+      if(!id) return;
+      rememberAttackTarget?.(id, findNearbyName?.(el) || getPageProfileName?.() || 'Enemy');
+      GM_setValue('ebsf_attack_click_ts', Date.now());
+      bsfDebugSet?.('target_remembered_id', id);
+      bsfDebugSet?.('target_remembered_reason', 'real_attack_click_v138');
+      bsfStartDeepFightWatch?.();
+      startUniversalFightWatcher?.();
+      toast?.('⚔️ Target remembered for learning.');
+    }, true);
+  }
+
+  function ebsf138Start(){
+    if(window.__ebsf138Started) return;
+    window.__ebsf138Started = true;
+    ebsf138InstallAttackWatcher();
+
+    [500, 1200, 2500, 4000, 7000, 11000, 16000, 24000, 32000].forEach(t=>setTimeout(ebsf138PaintAll, t));
+
+    try{
+      const obs = new MutationObserver(()=>{
+        clearTimeout(window.__ebsf138Debounce);
+        window.__ebsf138Debounce = setTimeout(ebsf138PaintAll, 500);
+      });
+      obs.observe(document.body, {childList:true, subtree:true, characterData:true});
+    }catch(e){}
+
+    let last = location.href;
+    setInterval(()=>{
+      if(location.href !== last){
+        last = location.href;
+        setTimeout(ebsf138PaintAll, 600);
+        setTimeout(ebsf138PaintAll, 1800);
+      }
+    }, 1000);
+  }
+
+  // Override old broad watcher and old painter entrypoints.
+  if(typeof setupStrongAttackRemembering === 'function') setupStrongAttackRemembering = function(){ ebsf138InstallAttackWatcher(); };
+  if(typeof paintHonorBadgesOnly === 'function'){
+    const oldPaintHonorBadgesOnly = paintHonorBadgesOnly;
+    paintHonorBadgesOnly = function(){ try{ oldPaintHonorBadgesOnly(); }catch(e){} ebsf138PaintAll(); };
+  }
+
+  ebsf138Start();
 
 })();
