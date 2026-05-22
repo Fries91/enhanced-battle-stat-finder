@@ -2,7 +2,7 @@ import os, time, json, sqlite3, requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Advanced Battle Stat Predictor v2.1.3 Balanced"
+APP_NAME = "Advanced Battle Stat Predictor v2.1.5 Balanced"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "3679030").split(",") if x.strip()}
 FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com").rstrip("/")
@@ -128,6 +128,50 @@ def user_label(total, your_total):
         return "Difficult"
     return "Avoid"
 
+
+def risk_adjust_confidence(total, your_total, confidence, source):
+    try:
+        total = float(total or 0)
+        your_total = float(your_total or 0)
+        confidence = float(confidence or 0)
+    except Exception:
+        return confidence or 0
+
+    if not total or not your_total:
+        return confidence or 0
+
+    src = str(source or "").lower()
+    exact = ("spy" in src) or ("manual" in src) or ("exact" in src)
+    ratio = total / your_total
+
+    if exact:
+        if ratio >= 10:
+            confidence = min(confidence or 75, 75)
+        elif ratio >= 5:
+            confidence = min(confidence or 80, 80)
+        return max(1, min(100, round(confidence)))
+
+    if ratio >= 20:
+        cap = 18
+    elif ratio >= 10:
+        cap = 25
+    elif ratio >= 5:
+        cap = 35
+    elif ratio >= 2.5:
+        cap = 45
+    elif ratio >= 1.75:
+        cap = 55
+    elif ratio >= 1.15:
+        cap = 65
+    else:
+        cap = 78
+
+    if not confidence:
+        confidence = cap
+    confidence = min(confidence, cap)
+    return max(1, min(100, round(confidence)))
+
+
 def normalize(row, your_total=0):
     if not row:
         return None
@@ -143,7 +187,7 @@ def normalize(row, your_total=0):
         "range_low": round(float(d.get("range_low") or (float(total or 0) * .88))),
         "range_high": round(float(d.get("range_high") or (float(total or 0) * 1.12))),
         "label": label,
-        "confidence": float(d.get("confidence") or 0),
+        "confidence": risk_adjust_confidence(total, your_total, d.get("confidence") or 0, d.get("source") or ""),
         "source": d.get("source") or "none",
         "source_detail": d.get("source_detail") or "",
         "updated_at": d.get("updated_at") or d.get("created_at") or 0,
