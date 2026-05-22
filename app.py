@@ -2,7 +2,7 @@ import os, time, json, sqlite3, requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder v2.0.0"
+APP_NAME = "Enhanced Battle Stat Finder v2.0.2"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "3679030").split(",") if x.strip()}
 FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com").rstrip("/")
@@ -97,6 +97,16 @@ def ensure_db():
         )""")
 ensure_db()
 
+SOURCE_PRIORITY = {
+    "manual": 95,
+    "spy": 95,
+    "ffscouter": 70,
+    "visible_ff_bsp": 68,
+    "bsp_cache": 66,
+    "fight_learning": 40,
+}
+
+
 def db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -148,10 +158,13 @@ def store_enemy(user_id, name, total, your_total=0, faction_id=None, confidence=
     ts = now_ts()
     low, high = total * .88, total * 1.12
     with db() as con:
-        old = con.execute("SELECT confidence FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
+        old = con.execute("SELECT confidence, source FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
         old_conf = float(old["confidence"] or 0) if old else 0
-        # Stronger intel wins; single-fight estimates can fill blanks but not overwrite better data.
-        if confidence >= old_conf or old_conf < 45:
+        old_source = old["source"] if old else ""
+        old_priority = SOURCE_PRIORITY.get(old_source, old_conf)
+        new_priority = SOURCE_PRIORITY.get(source, confidence)
+        # Stronger intel wins; single-fight estimates fill blanks only.
+        if new_priority >= old_priority or old_conf < 45:
             con.execute("""
             INSERT INTO enemy_stats
             (user_id,name,faction_id,total,range_low,range_high,label,confidence,source,source_detail,updated_at)
@@ -314,7 +327,14 @@ def parse_ff_payload(payload):
         est = r.get("bs_estimate") or r.get("battle_stats_estimate") or r.get("estimated_stats") or r.get("estimate") or r.get("total")
         tid, est = int(clean_num(tid)), clean_num(est)
         if tid and est:
-            out[tid] = {"total": est, "detail": r.get("bs_estimate_human") or "FF Scouter base"}
+            out[tid] = {
+            "total": est,
+            "detail": " • ".join(str(x) for x in [
+                r.get("bs_estimate_human") or r.get("estimate_human") or "FF Scouter base",
+                ("FF " + str(r.get("fair_fight"))) if r.get("fair_fight") is not None else "",
+                ("updated " + str(r.get("last_updated"))) if r.get("last_updated") else "",
+            ] if x)
+        }
     return out
 
 @app.post("/api/ffscouter/base-import")
