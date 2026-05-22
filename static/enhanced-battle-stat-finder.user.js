@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder v2
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.0.3
-// @description  Stable PDA battle stat badges with clickable colored intel popup, FF/BSP info bridge, profile-only app icon, and fight learning.
+// @version      2.0.5
+// @description  Stable PDA battle stat badges with silent learning, clickable colored intel popup, and profile-page-only main icon.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -38,7 +38,7 @@
     .ebsf2-good{background:#422006!important;color:#fde68a!important;border-color:#f59e0b!important}
     .ebsf2-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
     .ebsf2-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    #ebsf2-btn{position:fixed;left:18px;bottom:116px;z-index:999996;width:54px;height:54px;border-radius:10px;border:1px solid #806500;background:#111827;color:#fde68a;font-size:28px;box-shadow:0 2px 10px #000c}
+    #ebsf2-btn{display:none;position:fixed;left:18px;bottom:116px;z-index:999996;width:54px;height:54px;border-radius:10px;border:1px solid #806500;background:#111827;color:#fde68a;font-size:28px;box-shadow:0 2px 10px #000c}
     #ebsf2-panel{position:fixed;left:8px;right:8px;top:188px;max-height:70vh;overflow:auto;z-index:999997;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:14px;box-shadow:0 6px 22px #000d;font-family:Arial,sans-serif;display:none}
     #ebsf2-panel.open{display:block}
     #ebsf2-panel h2{margin:0;padding:12px 14px;color:#facc15;font-size:18px;background:#020617;border-radius:14px 14px 0 0}
@@ -46,7 +46,7 @@
     #ebsf2-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid #374151;border-radius:8px;padding:9px;margin:6px 0}
     #ebsf2-panel button{background:#1f2937;color:#fde68a;border:1px solid #806500;border-radius:8px;padding:8px 10px;margin:4px;font-weight:900}
     #ebsf2-panel .box{background:#111827;border:1px solid #334155;border-radius:10px;padding:10px;margin:8px 0}
-    #ebsf2-save{position:fixed;left:12px;top:120px;z-index:999998;background:#111827;color:#fde68a;border:1px solid #facc15;border-radius:10px;padding:8px;display:none;font:900 12px Arial}
+    #ebsf2-save{display:none!important}
 
     .ebsf2-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:250px;font:12px Arial,sans-serif;overflow:hidden}
     .ebsf2-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
@@ -289,7 +289,7 @@
       const el=e.target.closest?.('a,button,[onclick]'); if(!isAttackClick(el))return;
       const row=el.closest('tr,li,[class*="row"],[class*="member"]');
       const id=extractId([el.href,el.getAttribute?.('href'),el.getAttribute?.('onclick'),row?.innerHTML,location.href].join(' '));
-      if(id){ remember(id,(row?.textContent||'Enemy').trim().slice(0,40)); alertToast('⚔️ Target remembered'); }
+      if(id){ remember(id,(row?.textContent||'Enemy').trim().slice(0,40)); /* silent: target remembered */ }
     },true);
   }
   function alertToast(msg){ const d=document.createElement('div'); d.textContent=msg; d.style.cssText='position:fixed;left:12px;top:90px;z-index:999999;background:#111827;color:#fde68a;border:1px solid #facc15;border-radius:9px;padding:8px;font:900 12px Arial'; document.body.appendChild(d); setTimeout(()=>d.remove(),1800); }
@@ -760,5 +760,153 @@
       }, 100);
     };
   }
+
+
+
+  /* v2.0.4 Silent background mode
+     - No target remembered toast
+     - No saved data toast
+     - No Save Last Fight backup box
+     - No debug box in overlay
+     - Learning still runs in the background
+  */
+
+  window.EBSF2_SILENT_MODE = true;
+
+  function ebsf204CleanUI(){
+    const save = document.getElementById('ebsf2-save');
+    if(save) save.style.display = 'none';
+
+    // Remove any old toast-like boxes from earlier versions.
+    document.querySelectorAll('[data-ebsf-toast], .ebsf-toast').forEach(x=>x.remove());
+  }
+
+  // Override visible toast function to be silent.
+  if(typeof alertToast === 'function'){
+    alertToast = function(msg){
+      // intentionally silent
+    };
+  }
+
+  // Keep debug data internal, but do not show it.
+  const ebsf204OldDbg = typeof dbg === 'function' ? dbg : null;
+  if(ebsf204OldDbg){
+    dbg = function(k,v){
+      try{ ebsf204OldDbg(k,v); }catch(e){}
+      // no UI message
+    };
+  }
+
+  // Override render to remove debug box and hide save-last-fight area.
+  const ebsf204OldRender = render;
+  render = function(){
+    ebsf204OldRender();
+
+    const panel = document.getElementById('ebsf2-panel');
+    if(panel){
+      // Remove Debug section created by older render.
+      [...panel.querySelectorAll('.box')].forEach(box=>{
+        const txt = (box.textContent || '').trim();
+        if(/^Debug\b/i.test(txt) || /Remembered:|Result detected:|Saved:/i.test(txt)){
+          box.remove();
+        }
+      });
+
+      // Replace wording to make it clear learning is background-only.
+      [...panel.querySelectorAll('.box')].forEach(box=>{
+        if((box.textContent || '').includes('How it works')){
+          box.innerHTML = `
+            <b>How it works</b><br>
+            Badges show N/A until there is usable intel. FF/BSP visible estimates are used when readable. Fight learning runs quietly in the background and improves over time.
+          `;
+        }
+      });
+    }
+
+    ebsf204CleanUI();
+  };
+
+  // Override backup box display; no manual buttons.
+  if(typeof watchFight === 'function'){
+    const ebsf204OldWatchFight = watchFight;
+    watchFight = function(){
+      ebsf204OldWatchFight();
+      const save = document.getElementById('ebsf2-save');
+      if(save) save.style.display = 'none';
+      // keep hiding it in case old timeout tries to show it
+      setTimeout(ebsf204CleanUI, 19000);
+      setTimeout(ebsf204CleanUI, 26000);
+    };
+  }
+
+  // Override saveFight to avoid visible status spam; still saves and repaints.
+  if(typeof saveFight === 'function'){
+    const ebsf204OldSaveFight = saveFight;
+    saveFight = async function(result, manual){
+      const oldMsg = app.msg;
+      await ebsf204OldSaveFight(result, manual);
+      app.msg = oldMsg || 'Learning quietly in background.';
+      ebsf204CleanUI();
+      setTimeout(()=>paintAll?.(true), 500);
+      setTimeout(()=>paintAll?.(true), 1600);
+    };
+  }
+
+  // Strictly hide the old manual save box forever.
+  const ebsf204HideInterval = setInterval(ebsf204CleanUI, 1500);
+
+  setTimeout(()=>render?.(), 500);
+
+
+
+  /* v2.0.5 Force profile-page-only main icon
+     Prediction badges still show on faction/war/profile honor bars.
+     Only the large ⚔️ launcher icon is hidden outside profile pages.
+  */
+
+  function ebsf205IsRealProfilePage(){
+    const url = location.href;
+    const title = document.title || '';
+    const text = (document.body?.innerText || '').slice(0, 5000);
+
+    if(/factions\.php/i.test(url)) return false;
+    if(/Faction|Members\s+Score|Status\s+Attack|Lead Target|No active chain|Chain active/i.test(title + ' ' + text)) {
+      // PDA sometimes leaves "Profile" in title weirdly, so faction markers win.
+      if(/Members\s+Score|Status\s+Attack|Lead Target/i.test(text)) return false;
+    }
+
+    return /profiles\.php/i.test(url) ||
+           /'s Profile/i.test(title) ||
+           /User Information|Medals|Awards|Actions/i.test(text);
+  }
+
+  function ebsf205ForceIconVisibility(){
+    const btn = document.getElementById('ebsf2-btn');
+    if(!btn) return;
+    btn.style.display = ebsf205IsRealProfilePage() ? 'block' : 'none';
+  }
+
+  // Override earlier profile check if it exists.
+  if(typeof ebsf202IsProfilePage === 'function'){
+    ebsf202IsProfilePage = ebsf205IsRealProfilePage;
+  }
+
+  if(typeof ebsf202UpdateMainIconVisibility === 'function'){
+    ebsf202UpdateMainIconVisibility = ebsf205ForceIconVisibility;
+  }
+
+  const ebsf205OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
+  if(ebsf205OldPaintAll){
+    paintAll = async function(force){
+      const result = await ebsf205OldPaintAll(force);
+      ebsf205ForceIconVisibility();
+      return result;
+    };
+  }
+
+  ebsf205ForceIconVisibility();
+  setTimeout(ebsf205ForceIconVisibility, 500);
+  setTimeout(ebsf205ForceIconVisibility, 1500);
+  setInterval(ebsf205ForceIconVisibility, 1000);
 
 })();
