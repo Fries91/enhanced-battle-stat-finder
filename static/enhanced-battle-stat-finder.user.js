@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.0.2
-// @description  Lazy-load honor-bar overlay build: waits for Torn/PDA to settle before scanning, lighter repainting, badges only on exact player honor bars.
+// @version      3.0.4
+// @description  Locked honor-bar badge build: badge is mounted inside exact player honor bars so it scrolls with them, no floating overlay drift.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -40,12 +40,62 @@
     lastPaint: 0
   };
 
+  const warSafe = {
+    force: false,
+    firstAutoDone: false,
+    lastManual: 0
+  };
+
+  function isWarPage(){
+    const body = (document.body?.innerText || '').slice(0, 7000);
+    return /factions\.php/i.test(location.href) && /Members\s+Score\s+Status\s+Attack|Lead Target|Chain active|No active chain/i.test(body);
+  }
+
+  function warRowsReady(){
+    const body = (document.body?.innerText || '').slice(0, 10000);
+    const rowCount = (body.match(/\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b/g) || []).length;
+    return rowCount >= 5;
+  }
+
+  function ensureWarLoadButton(){
+    let btn = document.getElementById('absp31-war-load');
+    if(!isWarPage()){
+      if(btn) btn.remove();
+      return;
+    }
+    if(btn) return;
+
+    btn = document.createElement('button');
+    btn.id = 'absp31-war-load';
+    btn.textContent = '🧠 Load badges';
+    btn.style.cssText = [
+      'position:fixed',
+      'right:10px',
+      'bottom:122px',
+      'z-index:999995',
+      'background:#111827',
+      'color:#fde68a',
+      'border:1px solid #806500',
+      'border-radius:10px',
+      'padding:7px 9px',
+      'font:900 11px Arial',
+      'box-shadow:0 2px 10px #000b'
+    ].join(';');
+    btn.onclick = () => {
+      warSafe.force = true;
+      warSafe.lastManual = Date.now();
+      schedule(150);
+    };
+    document.body.appendChild(btn);
+  }
+
+
   GM_addStyle(`
     .ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge,.absp-hb-badge,.absp3-badge{display:none!important;visibility:hidden!important;pointer-events:none!important}
 
     .absp31-badge{
-      position:fixed!important;
-      z-index:999994!important;
+      position:absolute!important;
+      z-index:50!important;
       display:inline-flex!important;
       align-items:center!important;
       justify-content:center!important;
@@ -63,7 +113,7 @@
       overflow:hidden!important;
       pointer-events:auto!important;
       cursor:pointer!important;
-      transform:translateZ(0)!important;
+      right:4px!important;top:2px!important;transform:translateZ(0)!important;
     }
     .absp31-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
     .absp31-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
@@ -459,6 +509,15 @@
   function candidates(){
     if(!pageCanHaveHonors()) return [];
 
+    // War page safe mode: do not start heavy detection until Torn/PDA finishes drawing rows.
+    if(isWarPage()){
+      ensureWarLoadButton();
+      if(!warRowsReady()) return [];
+
+      // First auto scan waits extra. After that, user can force with the button.
+      if(!warSafe.force && !warSafe.firstAutoDone && Date.now() - state.lastPaint < 9000) return [];
+    }
+
     const raw = [...document.querySelectorAll(
       '[class*="honor"],[class*="name"],[style*="background-image"],a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]'
     )];
@@ -475,7 +534,8 @@
       const r = mount.getBoundingClientRect();
 
       // Lazy mode: only work on visible/near-visible honor bars.
-      if(r.bottom < -80 || r.top > innerHeight + 260) continue;
+      const extraWindow = isWarPage() ? 80 : 260;
+      if(r.bottom < -60 || r.top > innerHeight + extraWindow) continue;
 
       let id = idNear(mount) || idNear(item);
 
@@ -503,7 +563,7 @@
       if(!dup) picks.push({mount, rect:r, id, key});
     }
 
-    return picks.slice(0, 45);
+    return picks.slice(0, isWarPage() ? 18 : 45);
   }
 
   function intelFor(id){
@@ -574,8 +634,10 @@
 
     killOld();
     updateIcon();
+    ensureWarLoadButton();
 
     const found = candidates();
+    if(isWarPage() && found.length) warSafe.firstAutoDone = true;
     const live = new Set();
 
     for(const h of found){
@@ -590,7 +652,7 @@
       updateBadge(b, intel);
       positionBadge(b, h.rect);
 
-      if(!intel) setTimeout(() => fetchIntel(h.id, h.key), 900);
+      if(!intel && (!isWarPage() || warSafe.force)) setTimeout(() => fetchIntel(h.id, h.key), isWarPage() ? 2200 : 900);
     }
 
     document.querySelectorAll('.absp31-badge').forEach(b => {
@@ -610,9 +672,10 @@
     if(state.pending) return;
     state.pending = true;
     clearTimeout(window.__absp31Timer);
+    const wait = isWarPage() ? Math.max(ms, 2200) : ms;
     window.__absp31Timer = setTimeout(() => {
-      runWhenIdle(paint, 1600);
-    }, ms);
+      runWhenIdle(paint, isWarPage() ? 2400 : 1600);
+    }, wait);
   }
 
   function killOld(){
@@ -843,44 +906,205 @@
     killOld();
     updateIcon();
 
-    // Lazy load: let Torn/PDA finish the expensive first draw before scanning.
-    setTimeout(() => schedule(400), 2600);
-    setTimeout(() => schedule(600), 5200);
+    // Lazy load: war page gets a much longer delay because it is the heaviest Torn/PDA page.
+    setTimeout(() => {
+      ensureWarLoadButton();
+      schedule(isWarPage() ? 5200 : 400);
+    }, isWarPage() ? 5200 : 2600);
+
+    setTimeout(() => {
+      ensureWarLoadButton();
+      schedule(isWarPage() ? 7000 : 600);
+    }, isWarPage() ? 9500 : 5200);
 
     let lastMutation = 0;
     try{
       const obs = new MutationObserver(() => {
+        ensureWarLoadButton();
         const now = Date.now();
-        if(now - lastMutation < 1400) return;
+        const gap = isWarPage() ? 2800 : 1400;
+        if(now - lastMutation < gap) return;
         lastMutation = now;
-        schedule(1800);
+        schedule(isWarPage() ? 3200 : 1800);
       });
       obs.observe(document.body, {childList:true, subtree:true});
     }catch {}
 
-    // Scrolling should only reposition after the user pauses, not every frame.
+    // Scrolling should only repaint after the user pauses; war page waits longer.
     let scrollTimer = null;
     window.addEventListener('scroll', () => {
       clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(() => schedule(350), 450);
+      scrollTimer = setTimeout(() => schedule(isWarPage() ? 900 : 350), isWarPage() ? 900 : 450);
     }, {passive:true});
 
-    window.addEventListener('resize', () => schedule(900), {passive:true});
+    window.addEventListener('resize', () => schedule(isWarPage() ? 1800 : 900), {passive:true});
 
     let last = location.href;
     setInterval(() => {
+      ensureWarLoadButton();
       if(location.href !== last){
         last = location.href;
+        warSafe.force = false;
+        warSafe.firstAutoDone = false;
         document.querySelectorAll('.absp31-badge').forEach(b => b.remove());
-        schedule(1800);
+        schedule(isWarPage() ? 4500 : 1800);
       } else {
         killOld();
         updateIcon();
         // Very light periodic refresh only.
-        if(Date.now() - state.lastPaint > 9000) schedule(1600);
+        if(Date.now() - state.lastPaint > (isWarPage() ? 18000 : 9000)) {
+          schedule(isWarPage() ? 3500 : 1600);
+        }
       }
-    }, 3500);
+    }, isWarPage() ? 5200 : 3500);
   }
 
   boot();
+
+
+  /* v3.0.4 locked honor-bar mount
+     Fix:
+     - Floating fixed overlay drifted while PDA scrolled.
+     - Badge now mounts directly inside the honor/name strip.
+     - This keeps it locked to the honor bar.
+     - Also rejects FairFight/Est Stats/profile-image false positions.
+  */
+
+  function absp304RejectProfileInfoFalseHit(el){
+    let node = el;
+    for(let i=0; i<5 && node && node !== document.body; i++, node=node.parentElement){
+      const t = (node.textContent || '').replace(/\s+/g,' ').trim();
+      if(/FairFight:|Est\.?\s*Stats|May be impossible|User Information|uploaded images|Level\s*\d*|Rank\s*/i.test(t)){
+        // Allow only if this exact node is a compact honor image/name strip, not profile picture/FairFight row.
+        const r = el.getBoundingClientRect?.();
+        const ownText = (el.textContent || '').replace(/\s+/g,' ').trim();
+        const st = String(el.getAttribute?.('style') || '').toLowerCase();
+        const cls = String(el.className || '').toLowerCase();
+
+        if(!r) return true;
+
+        // True profile honor strip is wide and short and has the honor/name visual.
+        const trueStrip = r.width >= 100 && r.height <= 42 && r.width / Math.max(1, r.height) >= 3 &&
+          (st.includes('background-image') || cls.includes('honor') || cls.includes('name') || /[A-Za-z0-9_-]{3,}/.test(ownText));
+
+        if(trueStrip) return false;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Strengthen honorShape without replacing all the original logic.
+  const absp304OldHonorShape = typeof honorShape === 'function' ? honorShape : null;
+  if(absp304OldHonorShape){
+    honorShape = function(el){
+      if(!absp304OldHonorShape(el)) return false;
+      if(absp304RejectProfileInfoFalseHit(el)) return false;
+
+      const r = el.getBoundingClientRect?.();
+      if(!r) return false;
+
+      // Must remain a real honor-strip shape: wide and short.
+      if(r.height > 48) return false;
+      if(r.width / Math.max(1, r.height) < 2.8) return false;
+
+      return true;
+    };
+  }
+
+  function absp304BadgeForMount(mount, key){
+    if(!mount || !key) return null;
+
+    // Kill floating document-body badges from earlier versions.
+    document.querySelectorAll('body > .absp31-badge').forEach(x => x.remove());
+
+    let b = mount.querySelector(':scope > .absp31-badge');
+    if(!b){
+      b = document.createElement('span');
+      b.className = 'absp31-badge absp31-unknown';
+      b.textContent = 'N/A';
+      mount.appendChild(b);
+    }
+
+    // Only one badge inside this honor bar.
+    [...mount.querySelectorAll(':scope > .absp31-badge')].slice(1).forEach(x => x.remove());
+
+    const cs = getComputedStyle(mount);
+    if(cs.position === 'static') mount.style.position = 'relative';
+
+    b.dataset.key = key;
+    b.style.display = 'inline-flex';
+    b.style.visibility = 'visible';
+    b.style.left = '';
+    b.style.top = '';
+    b.style.right = '4px';
+    b.style.bottom = '';
+    b.style.position = 'absolute';
+
+    return b;
+  }
+
+  // Override makeBadge and positionBadge so badges lock inside honor bars.
+  makeBadge = function(key){
+    // Actual mount is assigned during paint via window.__absp304CurrentMount.
+    const mount = window.__absp304CurrentMount;
+    if(!mount) return null;
+    return absp304BadgeForMount(mount, key);
+  };
+
+  positionBadge = function(b, rect){
+    // Nothing to do. The badge is absolutely positioned inside the honor bar.
+    if(!b) return;
+    b.style.right = '4px';
+    b.style.top = '2px';
+  };
+
+  const absp304OldPaint = typeof paint === 'function' ? paint : null;
+  if(absp304OldPaint){
+    paint = async function(){
+      state.pending = false;
+      state.lastPaint = Date.now();
+
+      killOld();
+      updateIcon();
+      if(typeof ensureWarLoadButton === 'function') ensureWarLoadButton();
+
+      const found = candidates();
+      const liveKeys = new Set();
+
+      // Remove badges from honor bars that are no longer visible candidates.
+      for(const h of found){
+        const key = h.key;
+        liveKeys.add(key);
+        window.__absp304CurrentMount = h.mount;
+
+        const b = makeBadge(key);
+        window.__absp304CurrentMount = null;
+        if(!b) continue;
+
+        b.dataset.targetId = String(h.id || '');
+
+        let intel = intelFor(h.id);
+        if(!intel && isProfilePage()) intel = visibleIntel();
+        if(intel) saveIntel(h.id, intel);
+
+        updateBadge(b, intel);
+        positionBadge(b, h.rect);
+
+        if(!intel && (!isWarPage || !isWarPage() || (typeof warSafe !== 'undefined' && warSafe.force))) {
+          setTimeout(() => fetchIntel(h.id, h.key), (typeof isWarPage === 'function' && isWarPage()) ? 2200 : 900);
+        }
+      }
+
+      document.querySelectorAll('.absp31-badge').forEach(b => {
+        if(!liveKeys.has(b.dataset.key)) b.remove();
+      });
+    };
+  }
+
+  // Make popup work with child-mounted badges.
+  document.addEventListener('scroll', () => {
+    // No reposition needed; badge is locked inside honor bar.
+  }, {passive:true});
+
 })();
