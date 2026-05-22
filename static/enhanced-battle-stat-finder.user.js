@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.0.1
-// @description  Exact honor-bar overlay build: badges only on real wide/short player honor bars, no icons/header/pagination/profile-picture false hits.
+// @version      3.0.2
+// @description  Lazy-load honor-bar overlay build: waits for Torn/PDA to settle before scanning, lighter repainting, badges only on exact player honor bars.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -474,6 +474,9 @@
 
       const r = mount.getBoundingClientRect();
 
+      // Lazy mode: only work on visible/near-visible honor bars.
+      if(r.bottom < -80 || r.top > innerHeight + 260) continue;
+
       let id = idNear(mount) || idNear(item);
 
       // On a profile page, only allow ID fallback for a true honor bar shape, not profile pic/icons.
@@ -500,7 +503,7 @@
       if(!dup) picks.push({mount, rect:r, id, key});
     }
 
-    return picks.slice(0, 100);
+    return picks.slice(0, 45);
   }
 
   function intelFor(id){
@@ -587,7 +590,7 @@
       updateBadge(b, intel);
       positionBadge(b, h.rect);
 
-      if(!intel) fetchIntel(h.id, h.key);
+      if(!intel) setTimeout(() => fetchIntel(h.id, h.key), 900);
     }
 
     document.querySelectorAll('.absp31-badge').forEach(b => {
@@ -595,11 +598,21 @@
     });
   }
 
-  function schedule(ms=450){
+  function runWhenIdle(fn, timeout=1200){
+    if('requestIdleCallback' in window){
+      requestIdleCallback(fn, {timeout});
+    } else {
+      setTimeout(fn, Math.min(timeout, 900));
+    }
+  }
+
+  function schedule(ms=1200){
     if(state.pending) return;
     state.pending = true;
     clearTimeout(window.__absp31Timer);
-    window.__absp31Timer = setTimeout(paint, ms);
+    window.__absp31Timer = setTimeout(() => {
+      runWhenIdle(paint, 1600);
+    }, ms);
   }
 
   function killOld(){
@@ -830,27 +843,43 @@
     killOld();
     updateIcon();
 
-    [300, 900, 1800, 3500, 6500].forEach(t => setTimeout(() => schedule(50), t));
+    // Lazy load: let Torn/PDA finish the expensive first draw before scanning.
+    setTimeout(() => schedule(400), 2600);
+    setTimeout(() => schedule(600), 5200);
 
+    let lastMutation = 0;
     try{
-      const obs = new MutationObserver(() => schedule(700));
+      const obs = new MutationObserver(() => {
+        const now = Date.now();
+        if(now - lastMutation < 1400) return;
+        lastMutation = now;
+        schedule(1800);
+      });
       obs.observe(document.body, {childList:true, subtree:true});
     }catch {}
 
-    window.addEventListener('scroll', () => schedule(80), {passive:true});
-    window.addEventListener('resize', () => schedule(120), {passive:true});
+    // Scrolling should only reposition after the user pauses, not every frame.
+    let scrollTimer = null;
+    window.addEventListener('scroll', () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => schedule(350), 450);
+    }, {passive:true});
+
+    window.addEventListener('resize', () => schedule(900), {passive:true});
 
     let last = location.href;
     setInterval(() => {
       if(location.href !== last){
         last = location.href;
-        schedule(400);
+        document.querySelectorAll('.absp31-badge').forEach(b => b.remove());
+        schedule(1800);
       } else {
         killOld();
         updateIcon();
-        if(Date.now() - state.lastPaint > 2600) schedule(80);
+        // Very light periodic refresh only.
+        if(Date.now() - state.lastPaint > 9000) schedule(1600);
       }
-    }, 2400);
+    }, 3500);
   }
 
   boot();
