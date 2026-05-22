@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
-// @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.1.9
-// @description  Balanced PDA build with stable faction chat badges, real honor-bar badges, no orphan header badges, colored popup, and smoother repainting.
+// @namespace    Fries91.Torn.AdvancedBattleStatPredictor
+// @version      2.2.0
+// @description  Clean Balanced PDA build: stable honor/chat badges, no legacy blinking, colored popup, own-profile icon, Feed the Finder panel.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -10,2130 +10,366 @@
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
 // @connect      enhanced-battle-stat-finder.onrender.com
-// @connect      api.torn.com
 // @run-at       document-idle
 // ==/UserScript==
 
-(function(){
+(function () {
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const S = {
-    key:'ebsf2_key', user:'ebsf2_user', total:'ebsf2_total', intel:'ebsf2_intel_cache',
-    ff:'ebsf2_ff_enabled', lastTarget:'ebsf2_last_target', lastDebug:'ebsf2_debug'
+  const VERSION = '2.2.0';
+
+  const KEY = {
+    api: 'absp_key',
+    user: 'absp_user',
+    total: 'absp_total',
+    stats: 'absp_stats',
+    cache: 'absp_intel_cache',
+    icon: 'absp_icon_pos',
+    ff: 'absp_ff_enabled'
   };
 
   const app = {
-    key: GM_getValue(S.key,''),
-    user: safeJson(GM_getValue(S.user,'null')),
-    total: Number(GM_getValue(S.total,0)||0),
-    ff: !!GM_getValue(S.ff,false),
-    open:false, msg:''
+    key: GM_getValue(KEY.api, '') || GM_getValue('ebsf2_key', ''),
+    user: json(GM_getValue(KEY.user, 'null')) || json(GM_getValue('ebsf2_user', 'null')),
+    total: Number(GM_getValue(KEY.total, 0) || GM_getValue('ebsf2_total', 0) || 0),
+    stats: json(GM_getValue(KEY.stats, '{}')) || {},
+    ff: !!GM_getValue(KEY.ff, true),
+    open: false
   };
 
   GM_addStyle(`
-    .ebsf2-badge{position:absolute!important;right:3px!important;top:2px!important;z-index:80!important;display:inline-flex!important;align-items:center;justify-content:center;min-width:30px;max-width:52px;padding:1px 5px!important;border-radius:4px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;box-shadow:0 1px 4px #0009;pointer-events:auto;cursor:pointer;white-space:nowrap;overflow:hidden}
-    .ebsf2-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .ebsf2-fair{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
-    .ebsf2-good{background:#422006!important;color:#fde68a!important;border-color:#f59e0b!important}
-    .ebsf2-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .ebsf2-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    #ebsf2-btn{display:none;position:fixed;left:18px;bottom:116px;z-index:999996;width:54px;height:54px;border-radius:10px;border:1px solid #806500;background:#111827;color:#fde68a;font-size:28px;box-shadow:0 2px 10px #000c}
-    #ebsf2-panel{position:fixed;left:8px;right:8px;top:188px;max-height:70vh;overflow:auto;z-index:999997;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:14px;box-shadow:0 6px 22px #000d;font-family:Arial,sans-serif;display:none}
-    #ebsf2-panel.open{display:block}
-    #ebsf2-panel h2{margin:0;padding:12px 14px;color:#facc15;font-size:18px;background:#020617;border-radius:14px 14px 0 0}
-    #ebsf2-panel .body{padding:12px}
-    #ebsf2-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid #374151;border-radius:8px;padding:9px;margin:6px 0}
-    #ebsf2-panel button{background:#1f2937;color:#fde68a;border:1px solid #806500;border-radius:8px;padding:8px 10px;margin:4px;font-weight:900}
-    #ebsf2-panel .box{background:#111827;border:1px solid #334155;border-radius:10px;padding:10px;margin:8px 0}
-    #ebsf2-save{display:none!important}
+    /* Hard-hide old stacked patch elements so older ebsf2 painters cannot visually fight this clean build. */
+    .ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop{display:none!important;visibility:hidden!important;pointer-events:none!important}
 
-    .ebsf2-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:250px;font:12px Arial,sans-serif;overflow:hidden}
-    .ebsf2-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
-    .ebsf2-pop-close{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important;margin:0!important}
-    .ebsf2-pop-body{padding:10px;line-height:1.45}
-    .ebsf2-pill{display:inline-block;margin-left:4px;padding:1px 5px;border:1px solid #475569;border-radius:999px;background:#111827;color:#fde68a;font-weight:900}
-    .ebsf2-shape{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}
-    .ebsf2-shape div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
-    .ebsf2-note{color:#94a3b8;font-size:11px;margin:8px 0 0}
+    .absp-badge{position:absolute!important;right:3px!important;top:2px!important;z-index:50!important;display:inline-flex!important;align-items:center;justify-content:center;min-width:32px;max-width:58px;padding:1px 5px!important;border-radius:5px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;box-shadow:0 1px 4px #0009;pointer-events:auto;cursor:pointer;white-space:nowrap;overflow:hidden}
+    .absp-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
+    .absp-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
+    .absp-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
+    .absp-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
+    .absp-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
 
-    .ebsf2-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}
-    .ebsf2-tag-red{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    .ebsf2-tag-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .ebsf2-tag-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
-    .ebsf2-tag-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
+    #absp-main{display:none;position:fixed;left:16px;bottom:116px;z-index:999996;width:42px;height:42px;border-radius:9px;border:1px solid #806500;background:#111827;color:#fde68a;font-size:22px;box-shadow:0 2px 10px #000c;touch-action:none}
+    #absp-panel{position:fixed;left:8px;right:8px;top:74px;bottom:66px;z-index:999997;background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none}
+    #absp-panel.open{display:block}
+    #absp-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}
+    #absp-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}
+    #absp-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}
+    #absp-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
 
-    .ebsf2-tag-orange{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .ebsf2-tag-yellow{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
+    .absp-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9))}
+    .absp-hero-title{font-size:22px;font-weight:1000;color:#facc15;text-transform:uppercase}
+    .absp-chip{display:inline-flex;margin:7px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}
+    .absp-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35);margin-bottom:10px}
+    .absp-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase}
+    .absp-card p,.absp-card li{color:#dbeafe;line-height:1.42}
+    .absp-card ul{margin:7px 0 0 18px;padding:0}
+    .absp-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe}
 
-    .ebsf2-conf{display:inline-flex;align-items:center;justify-content:center;margin-left:5px;padding:2px 7px;border-radius:999px;font-weight:900;border:1px solid #64748b}
-
-
-
-    #ebsf2-panel.feed-theme{background:linear-gradient(145deg,#05070d 0%,#0b1220 55%,#111827 100%)!important;border:1px solid rgba(250,204,21,.55)!important;border-radius:22px!important;box-shadow:0 0 0 1px rgba(250,204,21,.12),0 18px 45px #000f, inset 0 0 24px rgba(59,130,246,.08)!important;overflow:hidden}
-    #ebsf2-panel.feed-theme h2{position:relative;background:radial-gradient(circle at top left,rgba(250,204,21,.22),transparent 38%),linear-gradient(90deg,#020617,#0f172a 70%,#111827)!important;border-bottom:1px solid rgba(250,204,21,.35)!important;color:#fde68a!important;text-transform:uppercase;letter-spacing:.8px;text-shadow:0 0 8px rgba(250,204,21,.25)}
-    .ebsf-feed-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9));box-shadow:inset 0 0 18px rgba(250,204,21,.06)}
-    .ebsf-feed-title{font-size:22px;font-weight:1000;color:#facc15;letter-spacing:.5px;text-transform:uppercase}
-    .ebsf-feed-sub{color:#cbd5e1;margin-top:4px;line-height:1.35}
-    .ebsf-feed-grid{display:grid;grid-template-columns:1fr;gap:10px}
-    .ebsf-feed-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35)}
-    .ebsf-feed-card:before{content:"";position:absolute;inset:0;border-radius:18px;background:radial-gradient(circle at top right,rgba(59,130,246,.12),transparent 42%);pointer-events:none}
-    .ebsf-feed-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase;letter-spacing:.3px}
-    .ebsf-feed-card p,.ebsf-feed-card li{color:#dbeafe;line-height:1.42}
-    .ebsf-feed-card ul{margin:7px 0 0 18px;padding:0}
-    .ebsf-feed-login{border-color:rgba(250,204,21,.48)!important;background:linear-gradient(145deg,rgba(30,41,59,.96),rgba(2,6,23,.98))!important;box-shadow:inset 0 0 18px rgba(250,204,21,.05),0 8px 18px rgba(0,0,0,.42)!important}
-    .ebsf-feed-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe!important}
-    .ebsf-feed-chip{display:inline-flex;align-items:center;gap:4px;margin:3px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}
-    #ebsf2-panel.feed-theme input{border-radius:14px!important;border:1px solid rgba(250,204,21,.28)!important;background:#020617!important}
-    #ebsf2-panel.feed-theme button{border-radius:14px!important;background:linear-gradient(180deg,#2a2110,#111827)!important;border:1px solid rgba(250,204,21,.52)!important;color:#fde68a!important;box-shadow:0 4px 12px rgba(0,0,0,.35)}
-
-
-    /* v2.1.0 css fixes */
-
-    #ebsf2-panel{top:74px!important;bottom:66px!important;max-height:none!important;overflow:hidden!important}
-    #ebsf2-panel .body{max-height:calc(100vh - 165px)!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch!important;padding-bottom:24px!important}
-    #ebsf2-btn{width:42px!important;height:42px!important;font-size:22px!important;border-radius:9px!important;touch-action:none!important}
-    .ebsf2-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
-    .ebsf2-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .ebsf2-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    .ebsf2-low{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
-
-
-    /* v2.1.3 balanced css */
-    #ebsf2-panel{top:74px!important;bottom:66px!important;max-height:none!important;overflow:hidden!important}
-    #ebsf2-panel .body{max-height:calc(100vh - 165px)!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch!important;padding-bottom:24px!important}
-    #ebsf2-btn{width:42px!important;height:42px!important;font-size:22px!important;border-radius:9px!important;touch-action:none!important}
-    .ebsf2-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .ebsf2-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
-    .ebsf2-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .ebsf2-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-
+    .absp-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:255px;font:12px Arial,sans-serif;overflow:hidden}
+    .absp-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
+    .absp-pop-head button{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important}
+    .absp-pop-body{padding:10px;line-height:1.45}
+    .absp-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}
+    .absp-red{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
+    .absp-orange{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
+    .absp-yellow{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
+    .absp-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
+    .absp-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
+    .absp-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
+    .absp-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
+    .absp-grid div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
   `);
 
-  function safeJson(s){ try{return JSON.parse(s)}catch(e){return null} }
-  function esc(s){ return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])) }
-  function fmt(n){ n=Number(n||0); if(n>=1e12)return (n/1e12).toFixed(1).replace('.0','')+'t'; if(n>=1e9)return (n/1e9).toFixed(1).replace('.0','')+'b'; if(n>=1e6)return (n/1e6).toFixed(1).replace('.0','')+'m'; if(n>=1e3)return (n/1e3).toFixed(1).replace('.0','')+'k'; return String(Math.round(n)); }
-  function parseNum(v){ if(v==null)return 0; let s=String(v).toLowerCase().replace(/,/g,'').trim(); let m=s.match(/([0-9]+(?:\.[0-9]+)?)\s*([kmbt])?/); if(!m)return 0; let n=Number(m[1]); let u=m[2]||''; if(u==='k')n*=1e3;if(u==='m')n*=1e6;if(u==='b')n*=1e9;if(u==='t')n*=1e12; return Math.round(n); }
-  function label(total){ if(!app.total||!total)return 'unknown'; let r=total/app.total; if(r<=.75)return 'easy'; if(r<=1.10)return 'fair'; if(r<=1.35)return 'good'; if(r<=1.75)return 'difficult'; return 'avoid'; }
-  function intelCache(){ return safeJson(GM_getValue(S.intel,'{}')) || {} }
-  function saveIntel(id,intel){ if(!id||!intel)return; const c=intelCache(); c[String(id)]={...intel,user_id:Number(id),saved_at:Date.now()}; GM_setValue(S.intel,JSON.stringify(c)); }
-  function getIntel(id){ const c=intelCache(); return c[String(id)] || null; }
-  function dbg(k,v){ const d=safeJson(GM_getValue(S.lastDebug,'{}'))||{}; d[k]=v; d.updated=new Date().toLocaleTimeString(); GM_setValue(S.lastDebug,JSON.stringify(d)); }
+  function json(s){ try { return JSON.parse(s); } catch { return null; } }
+  function esc(s){ return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+  function txt(el){ return (el?.textContent || '').replace(/\s+/g, ' ').trim(); }
+  function fmt(n){
+    n = Number(n || 0);
+    if(n >= 1e12) return (n/1e12).toFixed(1).replace('.0','') + 't';
+    if(n >= 1e9) return (n/1e9).toFixed(1).replace('.0','') + 'b';
+    if(n >= 1e6) return (n/1e6).toFixed(1).replace('.0','') + 'm';
+    if(n >= 1e3) return (n/1e3).toFixed(1).replace('.0','') + 'k';
+    return String(Math.round(n));
+  }
+  function parseNum(v){
+    const m = String(v ?? '').toLowerCase().replace(/,/g,'').match(/([0-9]+(?:\.[0-9]+)?)\s*([kmbt])?/);
+    if(!m) return 0;
+    let n = Number(m[1]);
+    if(m[2] === 'k') n *= 1e3;
+    if(m[2] === 'm') n *= 1e6;
+    if(m[2] === 'b') n *= 1e9;
+    if(m[2] === 't') n *= 1e12;
+    return Math.round(n);
+  }
+  function extractId(blob){
+    blob = String(blob || '');
+    let m = blob.match(/profiles\.php\?XID=(\d{3,10})/i);
+    if(m) return Number(m[1]);
+    m = blob.match(/(?:XID|user2ID|userID|targetID|profileId|targetId|data-userid|data-user|data-id)[=\\"':%26 ]+(\d{3,10})/i);
+    if(m) return Number(m[1]);
+    m = blob.match(/sid=attack[^"'<>]*?(\d{3,10})/i);
+    if(m) return Number(m[1]);
+    return null;
+  }
 
-  function req(method,path,data){
-    return new Promise(resolve=>{
+  function cache(){ return json(GM_getValue(KEY.cache, '{}')) || {}; }
+  function getIntel(id){ return cache()[String(id)] || null; }
+  function saveIntel(id, intel){
+    if(!id || !intel) return;
+    const c = cache();
+    const adj = {...intel, confidence:riskConfidence(intel)};
+    const old = c[String(id)];
+    if(old && sourceRank(old) > sourceRank(adj)) return;
+    c[String(id)] = {...adj, user_id:Number(id), saved_at:Date.now()};
+    GM_setValue(KEY.cache, JSON.stringify(c));
+  }
+  function sourceRank(i){
+    const s = String(i?.source || '').toLowerCase();
+    if(s.includes('manual') || s.includes('spy') || s.includes('exact')) return 95;
+    if(s.includes('ff') || s.includes('visible')) return 70;
+    if(s.includes('bsp')) return 66;
+    if(s.includes('fight')) return 40;
+    return Number(i?.confidence || 0);
+  }
+
+  function req(method, path, data){
+    return new Promise(resolve => {
       GM_xmlhttpRequest({
-        method,url:BASE+path,headers:{'Content-Type':'application/json'},
-        data:data?JSON.stringify(data):undefined,timeout:25000,
-        onload:r=>{try{resolve(JSON.parse(r.responseText))}catch(e){resolve({ok:false,error:'bad json',raw:r.responseText})}},
-        onerror:e=>resolve({ok:false,error:String(e)}),
-        ontimeout:()=>resolve({ok:false,error:'timeout'})
+        method, url: BASE + path,
+        headers: {'Content-Type':'application/json'},
+        data: data ? JSON.stringify(data) : undefined,
+        timeout: 22000,
+        onload: r => { try { resolve(JSON.parse(r.responseText)); } catch { resolve({ok:false,error:'bad json'}); } },
+        onerror: e => resolve({ok:false,error:String(e)}),
+        ontimeout: () => resolve({ok:false,error:'timeout'})
       });
     });
   }
 
-  function initUI(){
-    if(document.getElementById('ebsf2-btn')) return;
-    const btn=document.createElement('button'); btn.id='ebsf2-btn'; btn.textContent='⚔️'; btn.onclick=()=>{app.open=!app.open; render();};
-    document.body.appendChild(btn);
-    const panel=document.createElement('div'); panel.id='ebsf2-panel'; document.body.appendChild(panel);
-    const save=document.createElement('div'); save.id='ebsf2-save'; save.innerHTML=`⚔️ Save last fight <button data-r="easy_win">Easy</button><button data-r="close_win">Close</button><button data-r="generic_loss">Loss</button>`;
-    save.addEventListener('click',e=>{const b=e.target.closest('button[data-r]'); if(b) saveFight(b.dataset.r,true);});
-    document.body.appendChild(save);
-    render();
+  function diff(total, label){
+    const l = String(label || '').toLowerCase();
+    if(l.includes('avoid')) return 'avoid';
+    if(l.includes('difficult') || l.includes('hard')) return 'difficult';
+    if(l.includes('fair') || l.includes('good')) return 'fair';
+    if(l.includes('easy')) return 'easy';
+    if(total && app.total){
+      const r = Number(total) / Number(app.total);
+      if(r <= .75) return 'easy';
+      if(r <= 1.15) return 'fair';
+      if(r <= 1.75) return 'difficult';
+      return 'avoid';
+    }
+    return 'unknown';
   }
 
-  function render(){
-    const d=safeJson(GM_getValue(S.lastDebug,'{}'))||{};
-    const panel=document.getElementById('ebsf2-panel'); if(!panel)return;
-    panel.className=app.open?'open':'';
-    panel.innerHTML=`
-      <h2>⚔️ Enhanced Battle Stat Finder <button style="float:right" id="ebsf2-close">Close</button></h2>
-      <div class="body">
-        <div class="box">
-          <b>Login / Settings</b>
-          <input id="ebsf2-key" type="password" placeholder="Torn limited API key" value="${esc(app.key)}">
-          <label><input id="ebsf2-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto"> Use FF Scouter base intel</label><br>
-          <button id="ebsf2-login">Login / Save</button>
-          <button id="ebsf2-repaint">Repaint badges</button>
-        </div>
-        <div class="box">
-          <b>Status</b><br>
-          User: ${esc(app.user?.name||'not logged in')} ${app.user?.user_id?'['+app.user.user_id+']':''}<br>
-          My total: ${fmt(app.total)}<br>
-          ${esc(app.msg||'')}
-        </div>
-        <div class="box">
-          <b>Debug</b><br>
-          Remembered: ${esc(d.target_id||'no')} ${esc(d.target_name||'')}<br>
-          Result detected: ${esc(d.result||'none')}<br>
-          Saved: ${esc(d.saved||'no')}<br>
-          Updated: ${esc(d.updated||'')}
-        </div>
-        <div class="box">
-          <b>How it works</b><br>
-          N/A means no usable intel yet. FF/BSP visible estimates are used when readable. After an attack, auto-save tries first; if Torn PDA hides the result, use the small Save Last Fight buttons.
-        </div>
-      </div>`;
-    panel.querySelector('#ebsf2-close').onclick=()=>{app.open=false;render();};
-    panel.querySelector('#ebsf2-login').onclick=login;
-    panel.querySelector('#ebsf2-repaint').onclick=()=>paintAll(true);
+  function riskConfidence(intel){
+    let conf = Number(intel?.confidence || 0);
+    const total = Number(intel?.best_total || intel?.total || 0);
+    if(!total || !app.total) return conf;
+    const exact = /spy|manual|exact/i.test(String(intel?.source || ''));
+    const ratio = total / app.total;
+
+    if(exact){
+      if(ratio >= 10) conf = Math.min(conf || 75, 75);
+      else if(ratio >= 5) conf = Math.min(conf || 80, 80);
+      return Math.max(1, Math.min(100, Math.round(conf)));
+    }
+
+    let cap = 78;
+    if(ratio >= 20) cap = 18;
+    else if(ratio >= 10) cap = 25;
+    else if(ratio >= 5) cap = 35;
+    else if(ratio >= 2.5) cap = 45;
+    else if(ratio >= 1.75) cap = 55;
+    else if(ratio >= 1.15) cap = 65;
+
+    return Math.max(1, Math.min(100, Math.round(Math.min(conf || cap, cap))));
   }
 
-  async function login(){
-    app.key=document.getElementById('ebsf2-key').value.trim();
-    app.ff=document.getElementById('ebsf2-ff').checked;
-    GM_setValue(S.key,app.key); GM_setValue(S.ff,app.ff);
-    app.msg='Logging in...'; render();
-    const r=await req('POST','/api/login',{api_key:app.key});
-    if(r.ok){
-      app.user=r.user; app.total=r.stats.total; app.str_stat=r.stats.strength||0; app.def_stat=r.stats.defense||0; app.spd_stat=r.stats.speed||0; app.dex_stat=r.stats.dexterity||0;
-      GM_setValue(S.user,JSON.stringify(app.user)); GM_setValue(S.total,app.total);
-      app.msg='Logged in. Badges active.';
-      paintAll(true);
-    }else app.msg='Login failed: '+JSON.stringify(r.error||r);
-    render();
+  function confColor(c){
+    c = Number(c || 0);
+    if(c >= 66) return 'green';
+    if(c >= 46) return 'yellow';
+    if(c >= 26) return 'orange';
+    return 'red';
   }
 
-  function extractId(txt){
-    txt=String(txt||'');
-    let m=txt.match(/(?:XID|user2ID|userID|targetID|profileId|targetId)[=\\":%26]+(\d{3,10})/i); if(m)return Number(m[1]);
-    m=txt.match(/profiles\.php\?XID=(\d{3,10})/i); if(m)return Number(m[1]);
-    m=txt.match(/loader\.php\?sid=attack[^"']*?(?:user2ID=)?(\d{3,10})/i); if(m)return Number(m[1]);
+  function bspIntel(id){
+    if(!id) return null;
+    const keys = [
+      'tdup.battleStatsPredictor.cache.prediction.' + id,
+      'BSP_prediction_' + id,
+      'battleStatsPredictor_' + id
+    ];
+    for(const k of keys){
+      try{
+        const raw = localStorage.getItem(k) || GM_getValue(k, '');
+        if(!raw) continue;
+        const p = JSON.parse(raw);
+        const n = parseNum(p.TBS || p.TargetTBS || p.bs_estimate || p.estimate || p.total || p.Total);
+        if(n) return {total:n,best_total:n,label:diff(n),confidence:65,source:'bsp_cache'};
+      }catch {}
+    }
     return null;
   }
 
   function visibleIntel(){
-    const txt=(document.body?.innerText||'').replace(/\s+/g,' ');
-    for(const p of [/Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i,/Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i]){
-      const m=txt.match(p); if(m){ const n=parseNum(m[1]); if(n)return {total:n,best_total:n,range_low:n*.88,range_high:n*1.12,label:label(n),confidence:64,source:'visible_ff_bsp'}; }
-    }
-    return null;
+    const body = (document.body?.innerText || '').replace(/\s+/g, ' ');
+    const m = body.match(/Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i) ||
+              body.match(/Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i);
+    if(!m) return null;
+    const n = parseNum(m[1]);
+    return n ? {total:n,best_total:n,label:diff(n),confidence:70,source:'visible_ff_bsp'} : null;
   }
 
-  function bspIntel(id){
-    if(!id)return null;
-    const keys=['tdup.battleStatsPredictor.cache.prediction.'+id,'BSP_prediction_'+id,'battleStatsPredictor_'+id];
-    for(const k of keys){
-      try{
-        const raw=localStorage.getItem(k)||GM_getValue(k,''); if(!raw)continue;
-        const p=JSON.parse(raw); const n=parseNum(p.TBS||p.TargetTBS||p.bs_estimate||p.estimate||p.total||p.Total);
-        if(n)return {total:n,best_total:n,range_low:n*.88,range_high:n*1.12,label:label(n),confidence:65,source:'bsp_cache'};
-      }catch(e){}
-    }
-    return null;
+  function intelForId(id){
+    if(!id) return null;
+    return getIntel(id) || bspIntel(id);
   }
 
-  function makeBadge(intel){
-    const b=document.createElement('span'); updateBadge(b,intel); return b;
-  }
-  function updateBadge(b,intel){
-    let n=Number(intel?.best_total||intel?.total||0);
-    let l=(intel?.label||label(n)||'unknown').toLowerCase();
-    if(!n){ b.className='ebsf2-badge'; b.textContent='N/A'; b.title='No intel yet'; return; }
-    b.className='ebsf2-badge ebsf2-'+l; b.textContent=fmt(n); b.title=`${intel.source||'intel'} • ${intel.label||''} • ${Math.round(intel.confidence||0)}%`;
-  }
-  function attach(mount,intel){
-    if(!mount)return;
-    let b=mount.querySelector(':scope > .ebsf2-badge');
-    if(!b){ b=makeBadge(intel); const cs=getComputedStyle(mount); if(cs.position==='static')mount.style.position='relative'; mount.appendChild(b); }
-    else updateBadge(b,intel);
-  }
-
-  function rows(){
-    return [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')].filter(r=>{
-      const t=(r.textContent||'').trim(); const rect=r.getBoundingClientRect?.();
-      if(!t||!rect||rect.width<140||rect.height<14||rect.bottom<-120||rect.top>innerHeight+800)return false;
-      const shape=r.querySelectorAll?.('td,[class*="cell"],[class*="column"]').length>=2;
-      const words=/Okay|Attack|Hospital|Travel|Jail/i.test(t);
-      const honor=!!r.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"]');
-      return (shape&&(words||honor))||(words&&honor);
-    }).slice(0,160);
-  }
-  function memberCell(row){
-    const cells=[...(row.querySelectorAll?.('td,[class*="cell"],[class*="column"]')||[])];
-    for(const c of cells.slice(0,2)){ const t=(c.textContent||'').trim(); const r=c.getBoundingClientRect?.(); if(r&&r.width>45&&r.height>12&&!(/Score|Status|Attack|Okay/i.test(t)&&t.length<30))return c; }
-    return [...row.children].find(c=>{const r=c.getBoundingClientRect?.();return r&&r.width>45&&r.height>12})||null;
-  }
-  function honorMount(scope){
-    if(!scope)return null;
-    const cs=[...(scope.querySelectorAll?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]')||[])];
-    let best=null,sc=-999;
-    for(const el of cs){ const r=el.getBoundingClientRect?.(); if(!r||r.width<35||r.height<10||r.width>400||r.height>130)continue; let s=Math.min(40,r.width/7); const cl=String(el.className||'').toLowerCase(), st=String(el.getAttribute('style')||'').toLowerCase(); if(cl.includes('honor'))s+=45;if(cl.includes('name'))s+=30;if(st.includes('background-image'))s+=25;if(el.tagName==='IMG')s+=20;if(s>sc){sc=s;best=el;} }
-    return best?.parentElement || best || scope;
-  }
-
-  async function intelFor(row,mount){
-    const id=extractId([location.href,row?.innerHTML,mount?.innerHTML].join(' '));
-    let intel=id&&(getIntel(id)||bspIntel(id));
-    if(!intel && /Profile/i.test(document.title||'')) intel=visibleIntel();
-    if(id&&intel) saveIntel(id,intel);
-    if(id && !intel && app.key){
-      req('GET','/api/player/'+id+'/intel?your_total='+app.total).then(r=>{ if(r.ok&&r.player){saveIntel(id,r.player); paintAll(false);} });
-    }
-    return intel||null;
-  }
-
-  async function paintAll(force){
-    if(!/Faction|Profile|Members|User Information|Awards|Medals|Attack|Status/i.test((document.body?.innerText||'').slice(0,5000))) return;
-    for(const row of rows()){
-      const cell=memberCell(row), mount=honorMount(cell);
-      if(!mount)continue;
-      const intel=await intelFor(row,mount);
-      attach(mount,intel);
-    }
-    // profile honor
-    const profIntel=visibleIntel();
-    if(/Profile|User Information/i.test(document.body?.innerText||'')||/profiles\.php/.test(location.href)){
-      const candidates=[...document.querySelectorAll('img,[style*="background-image"],[class*="honor"],[class*="name"]')];
-      let best=null,score=-999;
-      for(const el of candidates){ if(el.closest('#ebsf2-panel'))continue; const r=el.getBoundingClientRect?.(); if(!r||r.width<80||r.height<10||r.width>600||r.height>140||r.top<120)continue; let s=Math.min(50,r.width/8); if(el.tagName==='IMG')s+=20; if(String(el.getAttribute('style')||'').includes('background-image'))s+=25; if(s>score){score=s;best=el;} }
-      if(best) attach(best.parentElement||best, profIntel || (extractId(location.href)?getIntel(extractId(location.href)):null));
-    }
-  }
-
-  function isAttackClick(el){
-    if(!el)return false;
-    const href=el.href||el.getAttribute?.('href')||'', onclick=el.getAttribute?.('onclick')||'', txt=(el.textContent||'').trim(), title=el.getAttribute?.('title')||el.getAttribute?.('aria-label')||'';
-    return /sid=attack|user2ID=|attack/i.test(href) || /sid=attack|user2ID|attack/i.test(onclick) || /^attack$/i.test(txt) || ((el.tagName==='A'||el.tagName==='BUTTON')&&/attack|fight/i.test(href+onclick+title+txt));
-  }
-  function remember(id,name){ const row={id:Number(id),name:name||'Enemy',ts:Date.now()}; GM_setValue(S.lastTarget,JSON.stringify(row)); dbg('target_id',id); dbg('target_name',row.name); watchFight(); }
-  function pending(){ const p=safeJson(GM_getValue(S.lastTarget,'null')); return p&&Date.now()-p.ts<1000*60*12?p:null; }
-
-  function resultFromText(raw){
-    const t=String(raw||'').replace(/\s+/g,' ').toLowerCase();
-    if(/you won|you mugged|you hospitalized|you hospitalised|you left|victory|respect gained|experience gained|you gained/.test(t))return 'generic_win';
-    if(/you lost|you were defeated|defeated by|you were hospitalized|you ran away|stalemate/.test(t))return 'generic_loss';
-    if(/leave them|mug them|hospitalize|claim rewards|continue/.test(t))return 'generic_win';
-    return null;
-  }
-  async function saveFight(result,manual){
-    const p=pending(); if(!p||!app.user||!app.total){dbg('saved','missing target/login');render();return;}
-    dbg('result',result);
-    const r=await req('POST','/api/attack/result',{attacker_id:app.user.user_id,attacker_name:app.user.name,attacker_total:app.total,target_id:p.id,target_name:p.name,result,fight_meta:{manual:!!manual}});
-    if(r.ok&&r.player){ saveIntel(p.id,r.player); dbg('saved','ok '+fmt(r.player.total)); document.getElementById('ebsf2-save').style.display='none'; paintAll(true); }
-    else dbg('saved','failed '+JSON.stringify(r.error||r));
-    render();
-  }
-  function watchFight(){
-    const tick=()=>{ const res=resultFromText(document.body?.innerText||''); if(res) saveFight(res,false); };
-    clearInterval(window.__ebsf2FightWatch);
-    window.__ebsf2FightWatch=setInterval(tick,900);
-    setTimeout(()=>{clearInterval(window.__ebsf2FightWatch); const p=pending(); if(p)document.getElementById('ebsf2-save').style.display='block';},18000);
-    try{
-      if(window.__ebsf2Obs)window.__ebsf2Obs.disconnect();
-      window.__ebsf2Obs=new MutationObserver(tick); window.__ebsf2Obs.observe(document.body,{childList:true,subtree:true,characterData:true});
-      setTimeout(()=>window.__ebsf2Obs?.disconnect(),1000*60*7);
-    }catch(e){}
-  }
-
-  function installAttackWatcher(){
-    document.addEventListener('click',e=>{
-      const el=e.target.closest?.('a,button,[onclick]'); if(!isAttackClick(el))return;
-      const row=el.closest('tr,li,[class*="row"],[class*="member"]');
-      const id=extractId([el.href,el.getAttribute?.('href'),el.getAttribute?.('onclick'),row?.innerHTML,location.href].join(' '));
-      if(id){ remember(id,(row?.textContent||'Enemy').trim().slice(0,40)); /* silent: target remembered */ }
-    },true);
-  }
-  function alertToast(msg){ const d=document.createElement('div'); d.textContent=msg; d.style.cssText='position:fixed;left:12px;top:90px;z-index:999999;background:#111827;color:#fde68a;border:1px solid #facc15;border-radius:9px;padding:8px;font:900 12px Arial'; document.body.appendChild(d); setTimeout(()=>d.remove(),1800); }
-
-  function boot(){
-    initUI(); installAttackWatcher();
-    [500,1200,2500,4500,8000,13000,21000,30000].forEach(t=>setTimeout(()=>paintAll(false),t));
-    let last=location.href;
-    setInterval(()=>{ if(location.href!==last){last=location.href; setTimeout(()=>paintAll(true),600); setTimeout(()=>paintAll(true),1800);} },1000);
-    new MutationObserver(()=>{clearTimeout(window.__ebsf2Paint); window.__ebsf2Paint=setTimeout(()=>paintAll(false),500);}).observe(document.body,{childList:true,subtree:true});
-  }
-  boot();
-
-
-  /* v2.0.1 fixes:
-     - Do not badge profile action/history rows.
-     - Profile page gets one badge on honor/name plate only.
-     - Visible FF/BSP estimate beats weak fight fallback.
-     - Fight loss fallback explains/updates only if no stronger estimate exists.
-  */
-
-  function ebsf201SourceRank(intel){
-    if(!intel) return 0;
-    const src = String(intel.source || '').toLowerCase();
-    if(src.includes('manual') || src.includes('spy')) return 95;
-    if(src.includes('ffscouter') || src.includes('visible_ff_bsp')) return 70;
-    if(src.includes('bsp')) return 66;
-    if(src.includes('fight')) return 40;
-    return Number(intel.confidence || 0);
-  }
-
-  const ebsf201OldSaveIntel = saveIntel;
-  saveIntel = function(id, intel){
-    if(!id || !intel) return;
-    const old = getIntel(id);
-    if(old && ebsf201SourceRank(old) > ebsf201SourceRank(intel)){
-      return; // do not let 42m fight fallback overwrite 246m FF/BSP
-    }
-    return ebsf201OldSaveIntel(id, intel);
-  };
-
-  function ebsf201PageKind(){
-    const txt = (document.body?.innerText || '').slice(0, 5000);
-    if(/Attack log|initiated an attack|lost to|won against|attacking/i.test(document.title + ' ' + txt)) return 'attacklog';
-    if(/User Information|Medals|Awards|Actions/i.test(txt) || /Profile/i.test(document.title || '') || /profiles\.php/.test(location.href)) return 'profile';
-    if(/Members\s+Score|Status\s+Attack|No active chain|Chain active|Lead target/i.test(txt) || /factions\.php/.test(location.href)) return 'faction';
-    return 'other';
-  }
-
-  function ebsf201VisibleIntel(){
-    const intel = visibleIntel?.();
-    if(!intel) return null;
-    intel.source = 'visible_ff_bsp';
-    intel.confidence = Math.max(Number(intel.confidence || 0), 70);
-    return intel;
-  }
-
-  function ebsf201FindProfileMount(){
-    const txt = document.body?.innerText || '';
-    if(!/User Information|Profile/i.test(txt + ' ' + document.title)) return null;
-
-    const candidates = [...document.querySelectorAll('img,[style*="background-image"],[class*="honor"],[class*="name"]')];
-    let best = null, score = -999;
-
-    for(const el of candidates){
-      if(el.closest('#ebsf2-panel')) continue;
-      if(el.closest('#ebsf2-save')) continue;
-
-      const wrapText = (el.parentElement?.innerText || el.closest('div')?.innerText || '').slice(0, 200);
-      if(/Level|Rank|years|months|days|Actions|Awards|Medals/i.test(wrapText)) continue;
-
-      const r = el.getBoundingClientRect?.();
-      if(!r || r.width < 120 || r.height < 10 || r.width > 620 || r.height > 90) continue;
-      if(r.top < 160 || r.top > window.innerHeight + 900) continue;
-
-      const cls = String(el.className || '').toLowerCase();
-      const st = String(el.getAttribute('style') || '').toLowerCase();
-      const alt = String(el.getAttribute('alt') || el.getAttribute('title') || '').toLowerCase();
-
-      let s = 0;
-      if(cls.includes('honor')) s += 50;
-      if(cls.includes('name')) s += 30;
-      if(st.includes('background-image')) s += 35;
-      if(el.tagName === 'IMG') s += 20;
-      if(alt) s += 10;
-      s += Math.min(45, r.width / 8);
-      s -= Math.abs(r.height - 32) * .4;
-
-      // Prefer the left/center honor image over right side stat boxes.
-      if(r.left < window.innerWidth * .72) s += 15;
-      if(s > score){ score = s; best = el; }
-    }
-
-    return best ? (best.parentElement || best) : null;
-  }
-
-  async function ebsf201PaintProfile(){
-    const mount = ebsf201FindProfileMount();
-    if(!mount) return;
-
-    // Remove duplicate profile badges first.
-    document.querySelectorAll('.ebsf2-profile-badge').forEach(b => {
-      if(!mount.contains(b)) b.remove();
-    });
-
-    const id = extractId(location.href) || extractId(document.body.innerHTML);
-    let intel = (id && getIntel(id)) || ebsf201VisibleIntel() || (id && bspIntel?.(id)) || null;
-    if(id && intel) saveIntel(id, intel);
-
-    attach(mount, intel);
-    const badge = mount.querySelector(':scope > .ebsf2-badge');
-    if(badge) badge.classList.add('ebsf2-profile-badge');
-  }
-
-  function ebsf201Rows(){
-    const possible = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')];
-    return possible.filter(r => {
-      const text = (r.textContent || '').trim();
-      const rect = r.getBoundingClientRect?.();
-      if(!text || !rect || rect.width < 140 || rect.height < 14) return false;
-      if(rect.bottom < -120 || rect.top > innerHeight + 800) return false;
-
-      // Never badge attack history/log rows.
-      if(/used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text)) return false;
-
-      const shape = r.querySelectorAll?.('td,[class*="cell"],[class*="column"]').length >= 2;
-      const warWords = /Okay|Hospital|Travel|Jail/i.test(text);
-      const hasAttackButton = /(^|\s)Attack(\s|$)/i.test(text);
-      const honor = !!r.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"]');
-
-      return shape && honor && (warWords || hasAttackButton);
-    }).slice(0, 160);
-  }
-
-  async function ebsf201PaintFaction(){
-    for(const row of ebsf201Rows()){
-      const cell = memberCell(row);
-      const mount = honorMount(cell);
-      if(!mount) continue;
-      const intel = await intelFor(row, mount);
-      attach(mount, intel);
-    }
-  }
-
-  const ebsf201OriginalPaintAll = paintAll;
-  paintAll = async function(force){
-    const kind = ebsf201PageKind();
-
-    // Clean all wrong badges from attack logs/history.
-    if(kind === 'attacklog'){
-      document.querySelectorAll('.ebsf2-badge').forEach(b => b.remove());
-      return;
-    }
-
-    if(kind === 'profile'){
-      // Remove row/history badges on profile page, then add only the honor badge.
-      document.querySelectorAll('.ebsf2-badge').forEach(b => b.remove());
-      await ebsf201PaintProfile();
-      return;
-    }
-
-    if(kind === 'faction'){
-      await ebsf201PaintFaction();
-      return;
-    }
-
-    return ebsf201OriginalPaintAll(force);
-  };
-
-  const ebsf201OldSaveFight = saveFight;
-  saveFight = async function(result, manual){
-    const p = pending?.();
-    const before = p ? getIntel(p.id) : null;
-
-    await ebsf201OldSaveFight(result, manual);
-
-    // If visible FF/BSP estimate is present after fight, restore it over weak fallback.
-    const afterVisible = ebsf201VisibleIntel();
-    if(p && before && ebsf201SourceRank(before) > ebsf201SourceRank(getIntel(p.id))){
-      saveIntel(p.id, before);
-    } else if(p && afterVisible) {
-      saveIntel(p.id, afterVisible);
-    }
-
-    setTimeout(()=>paintAll(true), 400);
-    setTimeout(()=>paintAll(true), 1500);
-  };
-
-  // Better attack-log result detection from screenshots:
-  const ebsf201OldResultFromText = resultFromText;
-  resultFromText = function(raw){
-    const t = String(raw || '').replace(/\s+/g, ' ');
-    const me = app.user?.name ? app.user.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
-    if(me && new RegExp(me + '\\s+lost\\s+to\\s+', 'i').test(t)) return 'generic_loss';
-    if(me && new RegExp(me + '\\s+won\\s+against\\s+', 'i').test(t)) return 'generic_win';
-    if(/YOU LOST/i.test(t)) return 'generic_loss';
-    if(/YOU WON|VICTORY/i.test(t)) return 'generic_win';
-    return ebsf201OldResultFromText(raw);
-  };
-
-  setTimeout(()=>paintAll(true), 800);
-  setTimeout(()=>paintAll(true), 2500);
-
-
-
-  /* v2.0.2 clickable intel popup + profile-only app icon */
-
-  function ebsf202IsProfilePage(){
-    const txt = (document.body?.innerText || '').slice(0, 5000);
-    return /profiles\.php/.test(location.href) || /Profile/i.test(document.title || '') || /User Information|Medals|Awards|Actions/i.test(txt);
-  }
-
-  function ebsf202UpdateMainIconVisibility(){
-    const btn = document.getElementById('ebsf2-btn');
-    if(!btn) return;
-    btn.style.display = ebsf202IsProfilePage() ? 'block' : 'none';
-  }
-
-  function ebsf202Relation(total){
-    total = Number(total || 0);
-    if(!app.total || !total) return 'Unknown';
-    const r = total / app.total;
-    if(r <= .75) return 'Low';
-    if(r <= 1.15) return 'Equal';
-    return 'High';
-  }
-
-  function ebsf202ParseFFVisibleInfo(){
-    const txt = (document.body?.innerText || '').replace(/\s+/g, ' ');
-    const out = {};
-    let m = txt.match(/FairFight:\s*([0-9.]+[^E]*?)(?=\s*Est\.|\s*Stats:|\s*$)/i);
-    if(m) out.fair_fight = m[1].trim();
-    m = txt.match(/Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i) || txt.match(/Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i);
-    if(m) out.estimated_stats = m[1].trim();
-    return out;
-  }
-
-  function ebsf202CompareStat(enemy, mine){
-    enemy = Number(enemy || 0);
-    mine = Number(mine || 0);
-    if(!enemy || !mine) return 'Unknown';
-    const r = enemy / mine;
-    if(r < .85) return 'Low';
-    if(r <= 1.15) return 'Equal';
-    return 'High';
-  }
-
-  function ebsf202ShapeFromIntel(intel){
-    const shape = {STR:'Unknown', DEF:'Unknown', SPD:'Unknown', DEX:'Unknown'};
-    if(intel?.strength || intel?.str_stat) shape.STR = ebsf202CompareStat(intel.strength || intel.str_stat, app.str_stat || 0);
-    if(intel?.defense || intel?.def_stat) shape.DEF = ebsf202CompareStat(intel.defense || intel.def_stat, app.def_stat || 0);
-    if(intel?.speed || intel?.spd_stat) shape.SPD = ebsf202CompareStat(intel.speed || intel.spd_stat, app.spd_stat || 0);
-    if(intel?.dexterity || intel?.dex_stat) shape.DEX = ebsf202CompareStat(intel.dexterity || intel.dex_stat, app.dex_stat || 0);
-    return shape;
-  }
-
-  function ebsf202MakePopup(targetId, intel, anchor){
-    document.querySelectorAll('.ebsf2-pop').forEach(x=>x.remove());
-
-    const ff = ebsf202ParseFFVisibleInfo();
-    const total = Number(intel?.best_total || intel?.total || 0);
-    const shape = ebsf202ShapeFromIntel(intel || {});
-    const rel = ebsf202Relation(total);
-
-    const pop = document.createElement('div');
-    pop.className = 'ebsf2-pop';
-    pop.innerHTML = `
-      <div class="ebsf2-pop-head">
-        <b>⚔️ Battle Intel</b>
-        <button class="ebsf2-pop-close">×</button>
-      </div>
-      <div class="ebsf2-pop-body">
-        <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} <span class="ebsf2-pill">${rel}</span></div>
-        <div><b>Source:</b> ${esc(intel?.source || 'none')}</div>
-        <div><b>Confidence:</b> ${Math.round(Number(intel?.confidence || 0))}%</div>
-        ${ff.fair_fight ? `<div><b>FF:</b> ${esc(ff.fair_fight)}</div>` : ''}
-        ${ff.estimated_stats ? `<div><b>FF Est:</b> ${esc(ff.estimated_stats)}</div>` : ''}
-        <hr>
-        <div class="ebsf2-shape">
-          <div><b>STR</b><span>${shape.STR}</span></div>
-          <div><b>DEF</b><span>${shape.DEF}</span></div>
-          <div><b>SPD</b><span>${shape.SPD}</span></div>
-          <div><b>DEX</b><span>${shape.DEX}</span></div>
-        </div>
-        <p class="ebsf2-note">Stat split needs spy/manual split or more detailed fight-log learning. FF/BSP gives a total estimate, not always exact STR/DEF/SPD/DEX.</p>
-      </div>
-    `;
-
-    document.body.appendChild(pop);
-    const r = anchor?.getBoundingClientRect?.();
-    if(r){
-      pop.style.left = Math.max(8, Math.min(window.innerWidth - 260, r.left)) + 'px';
-      pop.style.top = Math.max(80, Math.min(window.innerHeight - 250, r.bottom + 6)) + 'px';
-    } else {
-      pop.style.left = '12px';
-      pop.style.top = '120px';
-    }
-
-    pop.querySelector('.ebsf2-pop-close').onclick = ()=>pop.remove();
-    setTimeout(()=>{
-      document.addEventListener('click', function closer(e){
-        if(!pop.contains(e.target) && !e.target.closest('.ebsf2-badge')){
-          pop.remove();
-          document.removeEventListener('click', closer, true);
-        }
-      }, true);
-    }, 100);
-  }
-
-  function ebsf202BadgeIntelFromElement(badge){
-    const id = badge.dataset.targetId || '';
-    if(id && getIntel(id)) return {id, intel:getIntel(id)};
-
-    const total = parseNum(badge.textContent || '');
-    if(total) return {id, intel:{total,best_total:total,label:label(total),confidence:0,source:'badge'}};
-
-    return {id, intel:null};
-  }
-
-  function ebsf202InstallBadgeClick(){
-    if(window.__ebsf202BadgeClick) return;
-    window.__ebsf202BadgeClick = true;
-
-    document.addEventListener('click', e=>{
-      const b = e.target.closest?.('.ebsf2-badge');
-      if(!b) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const got = ebsf202BadgeIntelFromElement(b);
-      ebsf202MakePopup(got.id, got.intel, b);
-    }, true);
-  }
-
-  function ebsf202SetBadgeTargetId(mount, badge){
-    if(!badge) return;
-    const row = mount.closest?.('tr,li,[class*="row"],[class*="member"]') || mount;
-    const id = extractId([location.href, row?.innerHTML, mount?.innerHTML].filter(Boolean).join(' '));
-    if(id) badge.dataset.targetId = String(id);
-  }
-
-  const ebsf202OldAttach = attach;
-  attach = function(mount, intel){
-    ebsf202OldAttach(mount, intel);
-    const b = mount?.querySelector?.(':scope > .ebsf2-badge');
-    if(b){
-      b.style.pointerEvents = 'auto';
-      b.style.cursor = 'pointer';
-      b.title = (b.title || 'Battle Stat Finder') + ' • Tap for details';
-      ebsf202SetBadgeTargetId(mount, b);
-    }
-  };
-
-  const ebsf202OldVisibleIntel = visibleIntel;
-  visibleIntel = function(){
-    const intel = ebsf202OldVisibleIntel();
-    if(!intel) return null;
-    const ff = ebsf202ParseFFVisibleInfo();
-    if(ff.fair_fight || ff.estimated_stats){
-      intel.source = 'visible_ff_bsp';
-      intel.source_detail = [ff.fair_fight ? `FF ${ff.fair_fight}` : '', ff.estimated_stats ? `Est ${ff.estimated_stats}` : ''].filter(Boolean).join(' • ');
-      intel.confidence = Math.max(Number(intel.confidence || 0), 70);
-    }
-    return intel;
-  };
-
-  const ebsf202OldPaintAll = paintAll;
-  paintAll = async function(force){
-    await ebsf202OldPaintAll(force);
-    ebsf202UpdateMainIconVisibility();
-  };
-
-  ebsf202InstallBadgeClick();
-  ebsf202UpdateMainIconVisibility();
-  setInterval(ebsf202UpdateMainIconVisibility, 1500);
-
-
-
-  /* v2.0.3 colored popup chips */
-
-  function ebsf203ClassForValue(v){
-    v = String(v || 'Unknown').toLowerCase();
-    if(v.includes('high') || v.includes('heavy')) return 'ebsf2-tag-red';
-    if(v.includes('equal')) return 'ebsf2-tag-green';
-    if(v.includes('low') || v.includes('light')) return 'ebsf2-tag-blue';
-    return 'ebsf2-tag-grey';
-  }
-
-  function ebsf203ClassForConfidence(conf){
-    conf = Number(conf || 0);
-    if(conf >= 70) return 'ebsf2-tag-green';
-    if(conf >= 45) return 'ebsf2-tag-blue';
-    return 'ebsf2-tag-red';
-  }
-
-  function ebsf203Tag(v){
-    const val = v || 'Unknown';
-    return `<span class="ebsf2-tag ${ebsf203ClassForValue(val)}">${esc(val)}</span>`;
-  }
-
-  function ebsf203Conf(conf){
-    const c = Math.round(Number(conf || 0));
-    return `<span class="ebsf2-conf ${ebsf203ClassForConfidence(c)}">${c}%</span>`;
-  }
-
-  function ebsf203RelationTag(total){
-    const rel = ebsf202Relation ? ebsf202Relation(total) : 'Unknown';
-    return ebsf203Tag(rel);
-  }
-
-  // Override popup with colored High/Equal/Low/Unknown and confidence colors.
-  if(typeof ebsf202MakePopup === 'function'){
-    ebsf202MakePopup = function(targetId, intel, anchor){
-      document.querySelectorAll('.ebsf2-pop').forEach(x=>x.remove());
-
-      const ff = ebsf202ParseFFVisibleInfo ? ebsf202ParseFFVisibleInfo() : {};
-      const total = Number(intel?.best_total || intel?.total || 0);
-      const shape = ebsf202ShapeFromIntel ? ebsf202ShapeFromIntel(intel || {}) : {STR:'Unknown',DEF:'Unknown',SPD:'Unknown',DEX:'Unknown'};
-      const source = intel?.source || 'none';
-      const conf = Number(intel?.confidence || 0);
-
-      const armor = intel?.armor_signal || intel?.armor || 'Unknown';
-      const temp = intel?.temp_seen || intel?.temp || 'Unknown';
-
-      const pop = document.createElement('div');
-      pop.className = 'ebsf2-pop';
-      pop.innerHTML = `
-        <div class="ebsf2-pop-head">
-          <b>⚔️ Battle Intel</b>
-          <button class="ebsf2-pop-close">×</button>
-        </div>
-        <div class="ebsf2-pop-body">
-          <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} ${ebsf203RelationTag(total)}</div>
-          <div><b>Source:</b> ${esc(source)}</div>
-          <div><b>Confidence:</b> ${ebsf203Conf(conf)}</div>
-          ${ff.fair_fight ? `<div><b>FF:</b> ${esc(ff.fair_fight)}</div>` : ''}
-          ${ff.estimated_stats ? `<div><b>FF Est:</b> ${esc(ff.estimated_stats)}</div>` : ''}
-          <hr>
-          <div class="ebsf2-shape">
-            <div><b>STR</b>${ebsf203Tag(shape.STR)}</div>
-            <div><b>DEF</b>${ebsf203Tag(shape.DEF)}</div>
-            <div><b>SPD</b>${ebsf203Tag(shape.SPD)}</div>
-            <div><b>DEX</b>${ebsf203Tag(shape.DEX)}</div>
-            <div><b>Armor</b>${ebsf203Tag(armor)}</div>
-            <div><b>Temp</b>${ebsf203Tag(temp)}</div>
-          </div>
-          <p class="ebsf2-note">Colors: High/Heavy red, Equal green, Low/Light blue, Unknown grey. Confidence: high green, mid blue, low red.</p>
-        </div>
-      `;
-
-      document.body.appendChild(pop);
-      const r = anchor?.getBoundingClientRect?.();
-      if(r){
-        pop.style.left = Math.max(8, Math.min(window.innerWidth - 270, r.left)) + 'px';
-        pop.style.top = Math.max(80, Math.min(window.innerHeight - 270, r.bottom + 6)) + 'px';
-      } else {
-        pop.style.left = '12px';
-        pop.style.top = '120px';
+  function fetchIntel(id, mount){
+    if(!id || !app.key || !mount || mount.dataset.abspFetching === '1') return;
+    mount.dataset.abspFetching = '1';
+    req('GET', `/api/player/${id}/intel?your_total=${app.total || 0}`).then(r => {
+      mount.dataset.abspFetching = '';
+      if(r?.ok && r.player){
+        saveIntel(id, r.player);
+        updateMount(mount, getIntel(id) || r.player, id, mount.dataset.abspKind || 'honor');
       }
-
-      pop.querySelector('.ebsf2-pop-close').onclick = ()=>pop.remove();
-      setTimeout(()=>{
-        document.addEventListener('click', function closer(e){
-          if(!pop.contains(e.target) && !e.target.closest('.ebsf2-badge')){
-            pop.remove();
-            document.removeEventListener('click', closer, true);
-          }
-        }, true);
-      }, 100);
-    };
-  }
-
-
-
-  /* v2.0.4 Silent background mode
-     - No target remembered toast
-     - No saved data toast
-     - No Save Last Fight backup box
-     - No debug box in overlay
-     - Learning still runs in the background
-  */
-
-  window.EBSF2_SILENT_MODE = true;
-
-  function ebsf204CleanUI(){
-    const save = document.getElementById('ebsf2-save');
-    if(save) save.style.display = 'none';
-
-    // Remove any old toast-like boxes from earlier versions.
-    document.querySelectorAll('[data-ebsf-toast], .ebsf-toast').forEach(x=>x.remove());
-  }
-
-  // Override visible toast function to be silent.
-  if(typeof alertToast === 'function'){
-    alertToast = function(msg){
-      // intentionally silent
-    };
-  }
-
-  // Keep debug data internal, but do not show it.
-  const ebsf204OldDbg = typeof dbg === 'function' ? dbg : null;
-  if(ebsf204OldDbg){
-    dbg = function(k,v){
-      try{ ebsf204OldDbg(k,v); }catch(e){}
-      // no UI message
-    };
-  }
-
-  // Override render to remove debug box and hide save-last-fight area.
-  const ebsf204OldRender = render;
-  render = function(){
-    ebsf204OldRender();
-
-    const panel = document.getElementById('ebsf2-panel');
-    if(panel){
-      // Remove Debug section created by older render.
-      [...panel.querySelectorAll('.box')].forEach(box=>{
-        const txt = (box.textContent || '').trim();
-        if(/^Debug\b/i.test(txt) || /Remembered:|Result detected:|Saved:/i.test(txt)){
-          box.remove();
-        }
-      });
-
-      // Replace wording to make it clear learning is background-only.
-      [...panel.querySelectorAll('.box')].forEach(box=>{
-        if((box.textContent || '').includes('How it works')){
-          box.innerHTML = `
-            <b>How it works</b><br>
-            Badges show N/A until there is usable intel. FF/BSP visible estimates are used when readable. Fight learning runs quietly in the background and improves over time.
-          `;
-        }
-      });
-    }
-
-    ebsf204CleanUI();
-  };
-
-  // Override backup box display; no manual buttons.
-  if(typeof watchFight === 'function'){
-    const ebsf204OldWatchFight = watchFight;
-    watchFight = function(){
-      ebsf204OldWatchFight();
-      const save = document.getElementById('ebsf2-save');
-      if(save) save.style.display = 'none';
-      // keep hiding it in case old timeout tries to show it
-      setTimeout(ebsf204CleanUI, 19000);
-      setTimeout(ebsf204CleanUI, 26000);
-    };
-  }
-
-  // Override saveFight to avoid visible status spam; still saves and repaints.
-  if(typeof saveFight === 'function'){
-    const ebsf204OldSaveFight = saveFight;
-    saveFight = async function(result, manual){
-      const oldMsg = app.msg;
-      await ebsf204OldSaveFight(result, manual);
-      app.msg = oldMsg || 'Learning quietly in background.';
-      ebsf204CleanUI();
-      setTimeout(()=>paintAll?.(true), 500);
-      setTimeout(()=>paintAll?.(true), 1600);
-    };
-  }
-
-  // Strictly hide the old manual save box forever.
-  const ebsf204HideInterval = setInterval(ebsf204CleanUI, 1500);
-
-  setTimeout(()=>render?.(), 500);
-
-
-
-  /* v2.0.5 Force profile-page-only main icon
-     Prediction badges still show on faction/war/profile honor bars.
-     Only the large ⚔️ launcher icon is hidden outside profile pages.
-  */
-
-  function ebsf205IsRealProfilePage(){
-    const url = location.href;
-    const title = document.title || '';
-    const text = (document.body?.innerText || '').slice(0, 5000);
-
-    if(/factions\.php/i.test(url)) return false;
-    if(/Faction|Members\s+Score|Status\s+Attack|Lead Target|No active chain|Chain active/i.test(title + ' ' + text)) {
-      // PDA sometimes leaves "Profile" in title weirdly, so faction markers win.
-      if(/Members\s+Score|Status\s+Attack|Lead Target/i.test(text)) return false;
-    }
-
-    return /profiles\.php/i.test(url) ||
-           /'s Profile/i.test(title) ||
-           /User Information|Medals|Awards|Actions/i.test(text);
-  }
-
-  function ebsf205ForceIconVisibility(){
-    const btn = document.getElementById('ebsf2-btn');
-    if(!btn) return;
-    btn.style.display = ebsf205IsRealProfilePage() ? 'block' : 'none';
-  }
-
-  // Override earlier profile check if it exists.
-  if(typeof ebsf202IsProfilePage === 'function'){
-    ebsf202IsProfilePage = ebsf205IsRealProfilePage;
-  }
-
-  if(typeof ebsf202UpdateMainIconVisibility === 'function'){
-    ebsf202UpdateMainIconVisibility = ebsf205ForceIconVisibility;
-  }
-
-  const ebsf205OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(ebsf205OldPaintAll){
-    paintAll = async function(force){
-      const result = await ebsf205OldPaintAll(force);
-      ebsf205ForceIconVisibility();
-      return result;
-    };
-  }
-
-  ebsf205ForceIconVisibility();
-  setTimeout(ebsf205ForceIconVisibility, 500);
-  setTimeout(ebsf205ForceIconVisibility, 1500);
-  setInterval(ebsf205ForceIconVisibility, 1000);
-
-
-
-  /* v2.0.6 Clean main icon panel:
-     Only Rules, How It Works, ToS, API Key Use/Storage, then Login at bottom.
-  */
-
-  function ebsf206RenderCleanPanel(){
-    const panel = document.getElementById('ebsf2-panel');
-    if(!panel) return;
-
-    panel.className = app.open ? 'open' : '';
-    panel.innerHTML = `
-      <h2>⚔️ Battle Stat Finder <button style="float:right" id="ebsf2-close">Close</button></h2>
-      <div class="body">
-        <div class="box">
-          <b>📜 Rules</b><br>
-          <ul style="margin:8px 0 0 18px;padding:0;line-height:1.45">
-            <li>Use this as a prediction helper, not a guaranteed outcome.</li>
-            <li>Do not share another player’s private spy/manual data unless you are allowed to.</li>
-            <li>Predictions need time to learn and improve.</li>
-            <li>Respect Torn’s rules, API limits, and fair-use expectations.</li>
-          </ul>
-        </div>
-
-        <div class="box">
-          <b>⚔️ How It Works</b><br>
-          <p style="margin:8px 0 0;line-height:1.45">
-            The app shows a small stat badge on player honor bars. Tap the badge to see the intel popup.
-            It can use visible FF/BSP estimates when readable, stored backend intel, and quiet fight-learning signals.
-            New targets may show <b>N/A</b> until enough information is available.
-          </p>
-          <p style="margin:8px 0 0;line-height:1.45">
-            The app improves over time as more users fight, scan, and gather estimates. One fight gives a rough signal;
-            multiple fights and stronger sources make predictions better.
-          </p>
-        </div>
-
-        <div class="box">
-          <b>✅ Terms of Service</b><br>
-          <p style="margin:8px 0 0;line-height:1.45">
-            By using this tool, you understand that all numbers are estimates and may be wrong.
-            You are responsible for your own attacks, choices, and risk. The app does not guarantee wins,
-            respect gains, or exact enemy stats.
-          </p>
-          <p style="margin:8px 0 0;line-height:1.45">
-            This tool is intended to organize information already visible to you, information you provide,
-            or estimates collected through allowed API/visible-page use.
-          </p>
-        </div>
-
-        <div class="box">
-          <b>🔑 API Key Use & Storage</b><br>
-          <p style="margin:8px 0 0;line-height:1.45">
-            Use a <b>limited Torn API key</b>. Your key is saved locally in your browser/PDA userscript storage so the
-            script can log you in and detect your own battle stats for comparison.
-          </p>
-          <p style="margin:8px 0 0;line-height:1.45">
-            The backend uses your key only when needed for login/stat detection or optional estimate lookups.
-            No Torn password is ever requested. The app is designed around limited-key use and avoids asking for
-            unnecessary access.
-          </p>
-          <p style="margin:8px 0 0;line-height:1.45">
-            To stay aligned with Torn’s API rules, the script should not spam requests, should respect rate limits,
-            and should only use data the user is allowed to access.
-          </p>
-        </div>
-
-        <div class="box">
-          <b>Login</b><br>
-          <input id="ebsf2-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
-          <label style="display:block;margin:8px 0">
-            <input id="ebsf2-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto">
-            Use FF Scouter base intel when available
-          </label>
-          <button id="ebsf2-login">Login / Save</button>
-          <button id="ebsf2-repaint">Repaint badges</button>
-          <div style="margin-top:8px;color:#cbd5e1">
-            Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}
-          </div>
-        </div>
-      </div>
-    `;
-
-    const close = panel.querySelector('#ebsf2-close');
-    if(close) close.onclick = ()=>{ app.open=false; render(); };
-
-    const loginBtn = panel.querySelector('#ebsf2-login');
-    if(loginBtn) loginBtn.onclick = login;
-
-    const repaintBtn = panel.querySelector('#ebsf2-repaint');
-    if(repaintBtn) repaintBtn.onclick = ()=>paintAll?.(true);
-
-    ebsf205ForceIconVisibility?.();
-  }
-
-  render = ebsf206RenderCleanPanel;
-
-  setTimeout(()=>render?.(), 250);
-
-
-
-  /* v2.0.7 Feed Me Info themed main panel */
-
-  function ebsf207RenderFeedPanel(){
-    const panel = document.getElementById('ebsf2-panel');
-    if(!panel) return;
-
-    panel.className = app.open ? 'open feed-theme' : 'feed-theme';
-    panel.innerHTML = `
-      <h2>🍽️ FEED ME INFO <button style="float:right" id="ebsf2-close">Close</button></h2>
-      <div class="body">
-        <div class="ebsf-feed-hero">
-          <div class="ebsf-feed-title">Feed the Finder</div>
-          <div class="ebsf-feed-sub">
-            Give it clean intel, let it chew through fights, and watch the badges get smarter over time.
-          </div>
-          <div style="margin-top:8px">
-            <span class="ebsf-feed-chip">silent learning</span>
-            <span class="ebsf-feed-chip">honor badges</span>
-            <span class="ebsf-feed-chip">tap for intel</span>
-          </div>
-        </div>
-
-        <div class="ebsf-feed-grid">
-          <div class="ebsf-feed-card">
-            <b>📜 Rules</b>
-            <ul>
-              <li>Use predictions as guidance, not guaranteed wins.</li>
-              <li>Do not share private spy/manual data unless you are allowed to.</li>
-              <li>Fresh intel is better. Old intel may be wrong.</li>
-              <li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li>
-            </ul>
-          </div>
-
-          <div class="ebsf-feed-card">
-            <b>⚔️ How It Works</b>
-            <p>
-              The finder places small stat badges on player honor bars. Tap a badge to open the mini intel popup.
-              It can read visible FF/BSP estimates, saved backend intel, and quiet fight-learning signals.
-            </p>
-            <p>
-              New targets may show <b>N/A</b>. Feed it more info through scans, visible estimates, and fights so it can grow.
-            </p>
-          </div>
-
-          <div class="ebsf-feed-card">
-            <b>✅ Terms of Service</b>
-            <p>
-              All numbers are estimates and may be wrong. You are responsible for your own attacks, choices,
-              losses, wins, and respect gains.
-            </p>
-            <p>
-              This tool organizes information visible to you, provided by you, or gathered through allowed limited-key use.
-            </p>
-          </div>
-
-          <div class="ebsf-feed-card">
-            <b>🔑 API Key Use & Storage</b>
-            <p>
-              Use a <b>limited Torn API key</b>. Your key is stored locally in your browser/PDA userscript storage
-              so the script can log you in and compare targets against your own battle stats.
-            </p>
-            <p>
-              No Torn password is ever requested. The backend uses the key only for login/stat detection or optional
-              estimate support. The script avoids unnecessary API access and is built around limited-key use.
-            </p>
-          </div>
-
-          <div class="ebsf-feed-card ebsf-feed-login">
-            <b>🍟 Login — Feed Me Your Key</b>
-            <input id="ebsf2-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
-            <label style="display:block;margin:8px 0;color:#dbeafe">
-              <input id="ebsf2-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto">
-              Use FF Scouter base intel when available
-            </label>
-            <button id="ebsf2-login">Login / Save</button>
-            <button id="ebsf2-repaint">Repaint badges</button>
-            <div class="ebsf-feed-status">
-              Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-
-    const close = panel.querySelector('#ebsf2-close');
-    if(close) close.onclick = ()=>{ app.open=false; render(); };
-
-    const loginBtn = panel.querySelector('#ebsf2-login');
-    if(loginBtn) loginBtn.onclick = login;
-
-    const repaintBtn = panel.querySelector('#ebsf2-repaint');
-    if(repaintBtn) repaintBtn.onclick = ()=>paintAll?.(true);
-
-    ebsf205ForceIconVisibility?.();
-  }
-
-  render = ebsf207RenderFeedPanel;
-  setTimeout(()=>render?.(), 250);
-
-
-
-  /* v2.0.8 fixes:
-     - Prediction boxes remain on faction/war rows.
-     - Big main icon only shows on the logged-in user's own profile.
-     - Closing intel popup does not remove the prediction badge.
-  */
-
-  function ebsf208OwnProfileId(){
-    const id = extractId(location.href) || extractId(document.body?.innerHTML || '');
-    return id ? Number(id) : null;
-  }
-
-  function ebsf208IsOwnProfilePage(){
-    const text = (document.body?.innerText || '').slice(0, 5000);
-    if(/factions\.php/i.test(location.href)) return false;
-    if(/Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text)) return false;
-    if(!(/profiles\.php/i.test(location.href) || /Profile/i.test(document.title || '') || /User Information|Actions|Medals|Awards/i.test(text))) return false;
-
-    const me = Number(app.user?.user_id || 0);
-    if(!me) return false;
-
-    const pid = ebsf208OwnProfileId();
-    if(pid) return pid === me;
-
-    // PDA may hide XID on own profile; fall back to title/name match only when no visible XID.
-    const title = document.title || '';
-    if(app.user?.name && title.toLowerCase().includes(String(app.user.name).toLowerCase())) return true;
-
-    return false;
-  }
-
-  function ebsf208ForceMainIcon(){
-    const btn = document.getElementById('ebsf2-btn');
-    if(!btn) return;
-    btn.style.display = ebsf208IsOwnProfilePage() ? 'block' : 'none';
-  }
-
-  // Override old icon visibility checks.
-  if(typeof ebsf202IsProfilePage === 'function') ebsf202IsProfilePage = ebsf208IsOwnProfilePage;
-  if(typeof ebsf205IsRealProfilePage === 'function') ebsf205IsRealProfilePage = ebsf208IsOwnProfilePage;
-  if(typeof ebsf202UpdateMainIconVisibility === 'function') ebsf202UpdateMainIconVisibility = ebsf208ForceMainIcon;
-  if(typeof ebsf205ForceIconVisibility === 'function') ebsf205ForceIconVisibility = ebsf208ForceMainIcon;
-
-  // Strong faction row painter that does not depend on previous route wrappers.
-  function ebsf208IsFactionWarPage(){
-    const text = (document.body?.innerText || '').slice(0, 6000);
-    return /factions\.php/i.test(location.href) || /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text);
-  }
-
-  async function ebsf208PaintFactionRows(){
-    if(!ebsf208IsFactionWarPage()) return;
-
-    const rows2 = rows ? rows() : [];
-    for(const row of rows2){
-      const cell = memberCell ? memberCell(row) : null;
-      const mount = honorMount ? honorMount(cell) : null;
-      if(!mount) continue;
-      const intel = intelFor ? await intelFor(row, mount) : null;
-      attach?.(mount, intel);
-    }
-  }
-
-  // Patch popup close: remove only the popup, never badges.
-  function ebsf208SafeClosePopups(){
-    document.querySelectorAll('.ebsf2-pop').forEach(p=>p.remove());
-  }
-
-  // Override popup maker with a close handler that cannot catch/remove badges.
-  if(typeof ebsf202MakePopup === 'function'){
-    const ebsf208OldMakePopup = ebsf202MakePopup;
-    ebsf202MakePopup = function(targetId, intel, anchor){
-      ebsf208OldMakePopup(targetId, intel, anchor);
-      const pop = document.querySelector('.ebsf2-pop');
-      if(pop){
-        const close = pop.querySelector('.ebsf2-pop-close');
-        if(close){
-          close.onclick = (ev)=>{
-            ev.preventDefault();
-            ev.stopPropagation();
-            pop.remove();
-            setTimeout(()=>paintAll?.(true), 100);
-          };
-        }
-      }
-    };
-  }
-
-  // Extra safety: if any close click happens, repaint badges shortly after.
-  document.addEventListener('click', e=>{
-    if(e.target.closest?.('.ebsf2-pop-close')){
-      setTimeout(()=>paintAll?.(true), 150);
-      setTimeout(()=>ebsf208PaintFactionRows(), 500);
-    }
-  }, true);
-
-  // Wrap paintAll so faction row badges always return after PDA tab switching.
-  const ebsf208OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(ebsf208OldPaintAll){
-    paintAll = async function(force){
-      const r = await ebsf208OldPaintAll(force);
-      await ebsf208PaintFactionRows();
-      ebsf208ForceMainIcon();
-      return r;
-    };
-  }
-
-  // Repaint faction rows on PDA route/tab changes and delayed loads.
-  [400, 1200, 2500, 5000, 9000, 15000].forEach(t=>setTimeout(()=>{ ebsf208PaintFactionRows(); ebsf208ForceMainIcon(); }, t));
-  setInterval(()=>{ ebsf208PaintFactionRows(); ebsf208ForceMainIcon(); }, 2500);
-
-  try{
-    if(!window.__ebsf208Obs){
-      window.__ebsf208Obs = new MutationObserver(()=>{
-        clearTimeout(window.__ebsf208Debounce);
-        window.__ebsf208Debounce = setTimeout(()=>{ ebsf208PaintFactionRows(); ebsf208ForceMainIcon(); }, 400);
-      });
-      window.__ebsf208Obs.observe(document.body, {childList:true, subtree:true});
-    }
-  }catch(e){}
-
-  ebsf208ForceMainIcon();
-
-
-
-  /* v2.0.9 confidence color tiers:
-     1-25 red
-     26-45 orange
-     46-65 yellow
-     66-100 green
-  */
-
-  function ebsf209ClassForConfidence(conf){
-    conf = Number(conf || 0);
-    if(conf >= 66) return 'ebsf2-tag-green';
-    if(conf >= 46) return 'ebsf2-tag-yellow';
-    if(conf >= 26) return 'ebsf2-tag-orange';
-    return 'ebsf2-tag-red';
-  }
-
-  function ebsf209Conf(conf){
-    const c = Math.max(0, Math.min(100, Math.round(Number(conf || 0))));
-    return `<span class="ebsf2-conf ${ebsf209ClassForConfidence(c)}">${c}%</span>`;
-  }
-
-  // Override earlier confidence function used by popup.
-  if(typeof ebsf203ClassForConfidence === 'function'){
-    ebsf203ClassForConfidence = ebsf209ClassForConfidence;
-  }
-  if(typeof ebsf203Conf === 'function'){
-    ebsf203Conf = ebsf209Conf;
-  }
-
-
-
-  /* v2.1.0 fixes:
-     - Difficulty colors: Easy green, Fair yellow, Difficult orange, Avoid red, Low blue.
-     - Overlay scrolls so Login is reachable.
-     - Prediction badges are only on player honor/name bars.
-     - Feed hero stays funny, no "silent learning" chip.
-     - Main title is Advanced Battle Stat Predictor.
-     - Main icon is smaller and draggable.
-  */
-
-  function ebsf210DifficultyClass(labelText, total){
-    const l = String(labelText || '').toLowerCase();
-    if(l.includes('avoid')) return 'avoid';
-    if(l.includes('difficult') || l.includes('hard')) return 'difficult';
-    if(l.includes('fair') || l.includes('good')) return 'fair';
-    if(l.includes('easy')) return 'easy';
-    if(l.includes('low')) return 'low';
-    if(total && app.total){
-      const r = Number(total) / Number(app.total);
-      if(r <= .75) return 'easy';
-      if(r <= 1.15) return 'fair';
-      if(r <= 1.75) return 'difficult';
-      return 'avoid';
-    }
-    return 'unknown';
-  }
-
-  function ebsf210ColorText(labelText, total){
-    const cls = ebsf210DifficultyClass(labelText, total);
-    if(cls === 'easy') return 'Easy';
-    if(cls === 'fair') return 'Fair';
-    if(cls === 'difficult') return 'Difficult';
-    if(cls === 'avoid') return 'Avoid';
-    if(cls === 'low') return 'Low';
-    return 'Unknown';
-  }
-
-  // Override badge coloring so difficulty matches your rules.
-  if(typeof updateBadge === 'function'){
-    updateBadge = function(b, intel){
-      let n = Number(intel?.best_total || intel?.total || 0);
-      let diff = ebsf210DifficultyClass(intel?.label, n);
-      if(!n){
-        b.className = 'ebsf2-badge';
-        b.textContent = 'N/A';
-        b.title = 'No intel yet';
-        return;
-      }
-      b.className = 'ebsf2-badge ebsf2-' + diff;
-      b.textContent = fmt(n);
-      b.title = `${intel?.source || 'intel'} • ${ebsf210ColorText(intel?.label, n)} • ${Math.round(intel?.confidence || 0)}% • Tap for details`;
-    };
-  }
-
-  // Override relation chip: Easy green, Fair yellow, Difficult orange, Avoid red.
-  function ebsf210Relation(total){
-    const diff = ebsf210DifficultyClass('', total);
-    if(diff === 'easy') return 'Easy';
-    if(diff === 'fair') return 'Fair';
-    if(diff === 'difficult') return 'Difficult';
-    if(diff === 'avoid') return 'Avoid';
-    if(diff === 'low') return 'Low';
-    return 'Unknown';
-  }
-
-  if(typeof ebsf202Relation === 'function'){
-    ebsf202Relation = ebsf210Relation;
-  }
-
-  if(typeof ebsf203ClassForValue === 'function'){
-    const oldValueClass = ebsf203ClassForValue;
-    ebsf203ClassForValue = function(v){
-      const l = String(v || '').toLowerCase();
-      if(l.includes('avoid') || l.includes('high') || l.includes('heavy')) return 'ebsf2-tag-red';
-      if(l.includes('difficult')) return 'ebsf2-tag-orange';
-      if(l.includes('fair') || l.includes('equal')) return 'ebsf2-tag-yellow';
-      if(l.includes('easy') || l.includes('green')) return 'ebsf2-tag-green';
-      if(l.includes('low') || l.includes('light')) return 'ebsf2-tag-blue';
-      return 'ebsf2-tag-grey';
-    };
-  }
-
-  // Better confidence tier text stays exact from v2.0.9.
-  if(typeof ebsf203ClassForConfidence === 'function'){
-    ebsf203ClassForConfidence = function(conf){
-      conf = Number(conf || 0);
-      if(conf >= 66) return 'ebsf2-tag-green';
-      if(conf >= 46) return 'ebsf2-tag-yellow';
-      if(conf >= 26) return 'ebsf2-tag-orange';
-      return 'ebsf2-tag-red';
-    };
-  }
-
-  function ebsf210IsMemberRow(row){
-    if(!row) return false;
-    const text = (row.textContent || '').replace(/\s+/g,' ').trim();
-    if(!text) return false;
-
-    // Exclude headers/team panels/attack logs/history rows.
-    if(/Members\s+Score\s+Status\s+Attack/i.test(text)) return false;
-    if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(text)) return false;
-    if(/used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text)) return false;
-    if(/^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text)) return false;
-
-    const hasStatus = /\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b/i.test(text);
-    const hasAttack = /\bAttack\b/i.test(text);
-    const hasNamePlate = !!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
-    const rect = row.getBoundingClientRect?.();
-
-    return !!(rect && rect.width > 150 && rect.height > 18 && hasNamePlate && (hasStatus || hasAttack));
-  }
-
-  function ebsf210CleanBadBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
-      const row = b.closest?.('tr,li,[class*="row"],[class*="member"]');
-      const isProfile = ebsf202IsProfilePage?.() || ebsf205IsRealProfilePage?.() || ebsf208IsOwnProfilePage?.();
-      if(row){
-        if(!ebsf210IsMemberRow(row)) b.remove();
-        return;
-      }
-      // On non-profile pages, badges outside member rows are wrong.
-      if(!isProfile) b.remove();
     });
   }
 
-  // Strong faction row painter that only attaches to valid member rows.
-  async function ebsf210PaintFactionRows(){
-    const text = (document.body?.innerText || '').slice(0,6000);
-    const isFaction = /factions\.php/i.test(location.href) || /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text);
-    if(!isFaction) return;
+  function initUI(){
+    if(document.getElementById('absp-main')) return;
 
-    ebsf210CleanBadBadges();
+    const btn = document.createElement('button');
+    btn.id = 'absp-main';
+    btn.textContent = '🧠';
+    btn.onclick = () => { app.open = !app.open; renderPanel(); };
+    document.body.appendChild(btn);
 
-    const allRows = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')].filter(ebsf210IsMemberRow).slice(0, 180);
-    for(const row of allRows){
-      const cell = memberCell ? memberCell(row) : null;
-      const mount = honorMount ? honorMount(cell) : null;
-      if(!mount) continue;
-      const intel = intelFor ? await intelFor(row, mount) : null;
-      attach?.(mount, intel);
-    }
+    const panel = document.createElement('div');
+    panel.id = 'absp-panel';
+    document.body.appendChild(panel);
 
-    ebsf210CleanBadBadges();
+    makeDraggable(btn);
+    renderPanel();
   }
 
-  // Replace/augment paintAll so row badges return and bad badges disappear.
-  const ebsf210OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(ebsf210OldPaintAll){
-    paintAll = async function(force){
-      const r = await ebsf210OldPaintAll(force);
-      await ebsf210PaintFactionRows();
-      ebsf210CleanBadBadges();
-      ebsf210ForceOwnIcon();
-      return r;
-    };
-  }
+  function renderPanel(){
+    const p = document.getElementById('absp-panel');
+    if(!p) return;
 
-  function ebsf210RenderFeedPanel(){
-    const panel = document.getElementById('ebsf2-panel');
-    if(!panel) return;
-
-    panel.className = app.open ? 'open feed-theme' : 'feed-theme';
-    panel.innerHTML = `
-      <h2>🧠⚔️ ADVANCED BATTLE STAT PREDICTOR <button style="float:right" id="ebsf2-close">Close</button></h2>
+    p.className = app.open ? 'open' : '';
+    p.innerHTML = `
+      <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp-close">Close</button></h2>
       <div class="body">
-        <div class="ebsf-feed-hero">
-          <div class="ebsf-feed-title">Feed the Finder</div>
-          <div class="ebsf-feed-sub">
-            Toss it intel snacks, let it chew through fights, and it may stop guessing like a drunk goblin.
-          </div>
-          <div style="margin-top:8px">
-            <span class="ebsf-feed-chip">honor badges</span>
-            <span class="ebsf-feed-chip">tap for intel</span>
-            <span class="ebsf-feed-chip">gets smarter</span>
-          </div>
+        <div class="absp-hero">
+          <div class="absp-hero-title">Feed the Finder</div>
+          <div style="color:#cbd5e1;margin-top:4px;line-height:1.35">Toss it intel snacks, let it chew through fights, and it may stop guessing like a drunk goblin.</div>
+          <span class="absp-chip">honor badges</span><span class="absp-chip">chat badges</span><span class="absp-chip">tap for intel</span>
         </div>
 
-        <div class="ebsf-feed-grid">
-          <div class="ebsf-feed-card">
-            <b>📜 Rules</b>
-            <ul>
-              <li>Use predictions as guidance, not guaranteed wins.</li>
-              <li>Do not share private spy/manual data unless you are allowed to.</li>
-              <li>Fresh intel is tastier. Old intel may be stale.</li>
-              <li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li>
-            </ul>
-          </div>
+        <div class="absp-card"><b>📜 Rules</b><ul><li>Use predictions as guidance, not guaranteed wins.</li><li>Do not share private spy/manual data unless you are allowed to.</li><li>Fresh intel is tastier. Old intel may be stale.</li><li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li></ul></div>
+        <div class="absp-card"><b>⚔️ How It Works</b><p>The predictor places small stat badges on player honor bars and faction chat names. Tap a badge to open the mini intel popup. It can use visible FF/BSP estimates, saved backend intel, and fight-learning signals.</p><p>New targets may show <b>N/A</b>. Feed it more info through visible estimates and fights so it can grow teeth.</p></div>
+        <div class="absp-card"><b>✅ Terms of Service</b><p>All numbers are estimates and may be wrong. You are responsible for your own attacks, choices, losses, wins, and respect gains.</p><p>This tool organizes information visible to you, provided by you, or gathered through allowed limited-key use.</p></div>
+        <div class="absp-card"><b>🔑 API Key Use & Storage</b><p>Use a <b>limited Torn API key</b>. Your key is stored locally in your browser/PDA userscript storage so the script can log you in and compare targets against your own battle stats.</p><p>No Torn password is ever requested. The backend uses the key only for login/stat detection or optional estimate support. The script avoids unnecessary API access and is built around limited-key use.</p></div>
 
-          <div class="ebsf-feed-card">
-            <b>⚔️ How It Works</b>
-            <p>
-              The predictor places small stat badges on player honor bars. Tap a badge to open the mini intel popup.
-              It can use visible FF/BSP estimates, saved backend intel, and fight-learning signals.
-            </p>
-            <p>
-              New targets may show <b>N/A</b>. Feed it more info through visible estimates and fights so it can grow teeth.
-            </p>
-          </div>
-
-          <div class="ebsf-feed-card">
-            <b>✅ Terms of Service</b>
-            <p>
-              All numbers are estimates and may be wrong. You are responsible for your own attacks, choices,
-              losses, wins, and respect gains.
-            </p>
-            <p>
-              This tool organizes information visible to you, provided by you, or gathered through allowed limited-key use.
-            </p>
-          </div>
-
-          <div class="ebsf-feed-card">
-            <b>🔑 API Key Use & Storage</b>
-            <p>
-              Use a <b>limited Torn API key</b>. Your key is stored locally in your browser/PDA userscript storage
-              so the script can log you in and compare targets against your own battle stats.
-            </p>
-            <p>
-              No Torn password is ever requested. The backend uses the key only for login/stat detection or optional
-              estimate support. The script avoids unnecessary API access and is built around limited-key use.
-            </p>
-          </div>
-
-          <div class="ebsf-feed-card ebsf-feed-login">
-            <b>🍽️ Login — Feed the Beast</b>
-            <input id="ebsf2-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
-            <label style="display:block;margin:8px 0;color:#dbeafe">
-              <input id="ebsf2-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto">
-              Use FF Scouter base intel when available
-            </label>
-            <button id="ebsf2-login">Login / Save</button>
-            <button id="ebsf2-repaint">Repaint badges</button>
-            <div class="ebsf-feed-status">
-              Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}
-            </div>
-          </div>
+        <div class="absp-card">
+          <b>🍽️ Login — Feed the Beast</b>
+          <input id="absp-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
+          <label style="display:block;margin:8px 0;color:#dbeafe"><input id="absp-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto"> Use FF/BSP visible/base intel when available</label>
+          <button id="absp-login">Login / Save</button>
+          <button id="absp-repaint">Repaint badges</button>
+          <div class="absp-status">Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}</div>
         </div>
-      </div>
-    `;
+      </div>`;
 
-    panel.querySelector('#ebsf2-close').onclick = ()=>{ app.open=false; render(); };
-    panel.querySelector('#ebsf2-login').onclick = login;
-    panel.querySelector('#ebsf2-repaint').onclick = ()=>paintAll?.(true);
-    ebsf210ForceOwnIcon();
+    p.querySelector('#absp-close').onclick = () => { app.open = false; renderPanel(); };
+    p.querySelector('#absp-login').onclick = login;
+    p.querySelector('#absp-repaint').onclick = () => schedulePaint(50);
+    updateIcon();
   }
 
-  render = ebsf210RenderFeedPanel;
+  async function login(){
+    app.key = document.getElementById('absp-key')?.value.trim() || '';
+    app.ff = !!document.getElementById('absp-ff')?.checked;
+    GM_setValue(KEY.api, app.key);
+    GM_setValue(KEY.ff, app.ff);
 
-  function ebsf210IsOwnProfile(){
-    const text = (document.body?.innerText || '').slice(0, 5000);
-    if(/factions\.php/i.test(location.href)) return false;
-    if(/Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text)) return false;
-    const me = Number(app.user?.user_id || 0);
-    if(!me) return false;
-    const pid = extractId?.(location.href) || extractId?.(document.body?.innerHTML || '');
-    if(pid) return Number(pid) === me;
-    const title = document.title || '';
-    return !!(app.user?.name && title.toLowerCase().includes(String(app.user.name).toLowerCase()));
+    const r = await req('POST', '/api/login', {api_key: app.key});
+    if(r?.ok){
+      app.user = r.user;
+      app.total = Number(r.stats?.total || 0);
+      app.stats = {
+        strength: r.stats?.strength || 0,
+        defense: r.stats?.defense || 0,
+        speed: r.stats?.speed || 0,
+        dexterity: r.stats?.dexterity || 0
+      };
+      GM_setValue(KEY.user, JSON.stringify(app.user));
+      GM_setValue(KEY.total, app.total);
+      GM_setValue(KEY.stats, JSON.stringify(app.stats));
+    }
+    renderPanel();
+    schedulePaint(100);
   }
 
-  function ebsf210ForceOwnIcon(){
-    const btn = document.getElementById('ebsf2-btn');
-    if(!btn) return;
-    btn.style.display = ebsf210IsOwnProfile() ? 'block' : 'none';
+  function isProfilePage(){
+    const body = (document.body?.innerText || '').slice(0, 5000);
+    if(/Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(body)) return false;
+    return /profiles\.php/i.test(location.href) || /User Information|Actions|Medals|Awards/i.test(body);
   }
 
-  // Make main icon draggable and remember position.
-  function ebsf210MakeIconDraggable(){
-    const btn = document.getElementById('ebsf2-btn');
-    if(!btn || btn.dataset.dragReady === '1') return;
-    btn.dataset.dragReady = '1';
+  function ownProfile(){
+    if(!app.user?.user_id || !isProfilePage()) return false;
+    const pid = extractId(location.href) || extractId(document.body?.innerHTML || '');
+    if(pid) return Number(pid) === Number(app.user.user_id);
+    return !!(app.user?.name && String(document.title || '').toLowerCase().includes(String(app.user.name).toLowerCase()));
+  }
 
-    const saved = safeJson(GM_getValue('ebsf2_icon_pos', 'null'));
+  function updateIcon(){
+    const b = document.getElementById('absp-main');
+    if(b) b.style.display = ownProfile() ? 'block' : 'none';
+  }
+
+  function makeDraggable(btn){
+    const saved = json(GM_getValue(KEY.icon, 'null'));
     if(saved && saved.left != null && saved.top != null){
       btn.style.left = saved.left + 'px';
       btn.style.top = saved.top + 'px';
       btn.style.bottom = 'auto';
     }
 
-    let dragging = false, sx = 0, sy = 0, startL = 0, startT = 0, moved = false;
-
-    const down = (e)=>{
+    let drag = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
+    const down = e => {
       const p = e.touches ? e.touches[0] : e;
-      dragging = true; moved = false;
+      drag = true; moved = false;
       sx = p.clientX; sy = p.clientY;
-      const r = btn.getBoundingClientRect();
-      startL = r.left; startT = r.top;
-    };
-
-    const move = (e)=>{
-      if(!dragging) return;
-      const p = e.touches ? e.touches[0] : e;
-      const dx = p.clientX - sx, dy = p.clientY - sy;
-      if(Math.abs(dx) + Math.abs(dy) > 5) moved = true;
-      const left = Math.max(4, Math.min(window.innerWidth - btn.offsetWidth - 4, startL + dx));
-      const top = Math.max(54, Math.min(window.innerHeight - btn.offsetHeight - 54, startT + dy));
-      btn.style.left = left + 'px';
-      btn.style.top = top + 'px';
-      btn.style.bottom = 'auto';
-      e.preventDefault?.();
-    };
-
-    const up = (e)=>{
-      if(!dragging) return;
-      dragging = false;
-      GM_setValue('ebsf2_icon_pos', JSON.stringify({left: parseInt(btn.style.left || '18'), top: parseInt(btn.style.top || '120')}));
-      if(moved){
-        e.preventDefault?.();
-        e.stopPropagation?.();
-      }
-    };
-
-    btn.addEventListener('mousedown', down, true);
-    btn.addEventListener('touchstart', down, {passive:false, capture:true});
-    document.addEventListener('mousemove', move, true);
-    document.addEventListener('touchmove', move, {passive:false, capture:true});
-    document.addEventListener('mouseup', up, true);
-    document.addEventListener('touchend', up, true);
-
-    // Prevent accidental open after drag.
-    const oldClick = btn.onclick;
-    btn.onclick = (e)=>{
-      if(moved){
-        moved = false;
-        return;
-      }
-      if(oldClick) oldClick(e);
-    };
-  }
-
-  // Override old own icon checks too.
-  if(typeof ebsf202IsProfilePage === 'function') ebsf202IsProfilePage = ebsf210IsOwnProfile;
-  if(typeof ebsf205IsRealProfilePage === 'function') ebsf205IsRealProfilePage = ebsf210IsOwnProfile;
-  if(typeof ebsf208IsOwnProfilePage === 'function') ebsf208IsOwnProfilePage = ebsf210IsOwnProfile;
-  if(typeof ebsf202UpdateMainIconVisibility === 'function') ebsf202UpdateMainIconVisibility = ebsf210ForceOwnIcon;
-  if(typeof ebsf205ForceIconVisibility === 'function') ebsf205ForceIconVisibility = ebsf210ForceOwnIcon;
-  if(typeof ebsf208ForceMainIcon === 'function') ebsf208ForceMainIcon = ebsf210ForceOwnIcon;
-
-  ebsf210MakeIconDraggable();
-  ebsf210ForceOwnIcon();
-
-  [400,1200,2500,5000,9000,15000].forEach(t=>setTimeout(()=>{ ebsf210PaintFactionRows(); ebsf210CleanBadBadges(); ebsf210ForceOwnIcon(); ebsf210MakeIconDraggable(); }, t));
-  setInterval(()=>{ ebsf210PaintFactionRows(); ebsf210CleanBadBadges(); ebsf210ForceOwnIcon(); ebsf210MakeIconDraggable(); }, 2500);
-  setTimeout(()=>render?.(), 300);
-
-
-
-  /* v2.1.1 Stable honor-bar-only painter
-     Fixes:
-     - Stops blinking caused by competing cleanup/repaint loops.
-     - Removes badges from headers/Attack/Status/Score columns.
-     - Only paints inside the player honor/name plate area.
-  */
-
-  function ebsf211IsFactionPage(){
-    const text = (document.body?.innerText || '').slice(0, 7000);
-    return /factions\.php/i.test(location.href) || /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text);
-  }
-
-  function ebsf211IsBadText(text){
-    text = String(text || '').replace(/\s+/g, ' ').trim();
-    return !text ||
-      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
-      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
-      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(text) ||
-      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
-  }
-
-  function ebsf211IsRealMemberRow(row){
-    if(!row) return false;
-    const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
-    const rect = row.getBoundingClientRect?.();
-    if(!rect || rect.width < 230 || rect.height < 22 || rect.bottom < -150 || rect.top > innerHeight + 900) return false;
-    if(ebsf211IsBadText(text)) return false;
-
-    const hasStatusOrAttack = /\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text);
-    const hasHonor = !!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
-    return hasStatusOrAttack && hasHonor;
-  }
-
-  function ebsf211MemberArea(row){
-    if(!row) return null;
-
-    // Prefer early cells only. This prevents attaching to Status/Attack columns.
-    const cells = [...(row.querySelectorAll?.('td,[class*="cell"],[class*="column"]') || [])];
-    const rowRect = row.getBoundingClientRect?.();
-
-    for(const c of cells.slice(0, 2)){
-      const r = c.getBoundingClientRect?.();
-      const t = (c.textContent || '').trim();
-      if(!r || r.width < 75 || r.height < 16) continue;
-      if(/Score|Status|Attack|Okay/i.test(t) && t.length < 40) continue;
-      if(rowRect && r.left > rowRect.left + rowRect.width * 0.58) continue;
-      return c;
-    }
-
-    // Fallback: first wide child on left half.
-    for(const c of [...(row.children || [])].slice(0, 3)){
-      const r = c.getBoundingClientRect?.();
-      if(!r || r.width < 75 || r.height < 16) continue;
-      if(rowRect && r.left > rowRect.left + rowRect.width * 0.58) continue;
-      return c;
-    }
-
-    return null;
-  }
-
-  function ebsf211HonorMount(row){
-    const area = ebsf211MemberArea(row);
-    if(!area) return null;
-
-    const rowRect = row.getBoundingClientRect?.();
-    const candidates = [...(area.querySelectorAll?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]') || [])];
-
-    let best = null;
-    let bestScore = -999;
-
-    for(const el of candidates){
-      if(el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) continue;
-      const r = el.getBoundingClientRect?.();
-      if(!r || r.width < 45 || r.height < 10 || r.width > 280 || r.height > 90) continue;
-      if(rowRect && r.left > rowRect.left + rowRect.width * 0.58) continue;
-
-      const txt = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
-      if(/Score|Status|Attack|Okay/i.test(txt) && txt.length < 50) continue;
-
-      const cls = String(el.className || '').toLowerCase();
-      const st = String(el.getAttribute('style') || '').toLowerCase();
-      let score = 0;
-      if(cls.includes('honor')) score += 55;
-      if(cls.includes('name')) score += 35;
-      if(st.includes('background-image')) score += 35;
-      if(el.tagName === 'IMG') score += 20;
-      if(el.href && /profiles\.php/i.test(el.href)) score += 25;
-      score += Math.min(35, r.width / 8);
-
-      if(score > bestScore){
-        bestScore = score;
-        best = el;
-      }
-    }
-
-    if(!best) return null;
-
-    // Usually the immediate parent is the true honor/name plate.
-    const p = best.parentElement || best;
-    const pr = p.getBoundingClientRect?.();
-    if(pr && rowRect && pr.left <= rowRect.left + rowRect.width * 0.58 && pr.width <= 310 && pr.height <= 100){
-      return p;
-    }
-    return best;
-  }
-
-  function ebsf211BadgeBelongsOnHonor(badge){
-    if(!badge || badge.closest?.('.ebsf2-pop')) return true;
-
-    const row = badge.closest?.('tr,li,[class*="row"],[class*="member"]');
-    if(row){
-      if(!ebsf211IsRealMemberRow(row)) return false;
-      const rowRect = row.getBoundingClientRect?.();
-      const br = badge.getBoundingClientRect?.();
-      if(rowRect && br && br.left > rowRect.left + rowRect.width * 0.62) return false;
-      return true;
-    }
-
-    // Non-row badges are only allowed on profile pages.
-    const text = (document.body?.innerText || '').slice(0, 5000);
-    const profile = /profiles\.php/i.test(location.href) || /User Information|Actions|Medals|Awards/i.test(text);
-    return profile;
-  }
-
-  function ebsf211CleanWrongBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(!ebsf211BadgeBelongsOnHonor(b)) b.remove();
-    });
-  }
-
-  async function ebsf211PaintFactionRows(){
-    if(!ebsf211IsFactionPage()) return;
-
-    const rows = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')]
-      .filter(ebsf211IsRealMemberRow)
-      .slice(0, 180);
-
-    for(const row of rows){
-      const mount = ebsf211HonorMount(row);
-      if(!mount) continue;
-
-      const intel = intelFor ? await intelFor(row, mount) : null;
-      attach?.(mount, intel);
-
-      const b = mount.querySelector?.(':scope > .ebsf2-badge');
-      if(b){
-        b.dataset.ebsfHonorOnly = '1';
-        const rowId = extractId?.([location.href, row.innerHTML, mount.innerHTML].join(' '));
-        if(rowId) b.dataset.targetId = String(rowId);
-      }
-    }
-
-    ebsf211CleanWrongBadges();
-  }
-
-  // Disable the older aggressive cleanup that caused blinking.
-  if(typeof ebsf210CleanBadBadges === 'function'){
-    ebsf210CleanBadBadges = ebsf211CleanWrongBadges;
-  }
-  if(typeof ebsf208PaintFactionRows === 'function'){
-    ebsf208PaintFactionRows = ebsf211PaintFactionRows;
-  }
-  if(typeof ebsf210PaintFactionRows === 'function'){
-    ebsf210PaintFactionRows = ebsf211PaintFactionRows;
-  }
-
-  const ebsf211OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(ebsf211OldPaintAll){
-    paintAll = async function(force){
-      // Let profile/main logic run, then repair faction page with our stable painter.
-      const r = await ebsf211OldPaintAll(force);
-      await ebsf211PaintFactionRows();
-      ebsf211CleanWrongBadges();
-      ebsf210ForceOwnIcon?.();
-      ebsf208ForceMainIcon?.();
-      return r;
-    };
-  }
-
-  // Less spammy repaint schedule: enough for PDA tab changes, not enough to blink.
-  if(!window.__ebsf211StableLoop){
-    window.__ebsf211StableLoop = true;
-    [500, 1500, 3500, 7000].forEach(t=>setTimeout(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, t));
-    setInterval(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, 5000);
-
-    try{
-      const obs = new MutationObserver(()=>{
-        clearTimeout(window.__ebsf211Debounce);
-        window.__ebsf211Debounce = setTimeout(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, 650);
-      });
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
-  }
-
-  setTimeout(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, 250);
-
-
-
-  /* v2.1.3 Balanced repaint controller
-     Goal:
-     - Keep full-feature colors/popup/main overlay.
-     - Stop freezing by disabling stacked old loops.
-     - Use one throttled painter for faction rows/profile badges.
-     - Main icon only appears on logged-in user's own profile.
-  */
-
-  window.__ABSP_BALANCED_213 = true;
-
-  function absp213Now(){ return Date.now(); }
-
-  function absp213IsFactionPage(){
-    const text = (document.body?.innerText || '').slice(0, 7000);
-    return /factions\.php/i.test(location.href) || /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text);
-  }
-
-  function absp213IsProfilePage(){
-    const text = (document.body?.innerText || '').slice(0, 5000);
-    if(/factions\.php/i.test(location.href)) return false;
-    if(/Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text)) return false;
-    return /profiles\.php/i.test(location.href) || /Profile/i.test(document.title || '') || /User Information|Actions|Medals|Awards/i.test(text);
-  }
-
-  function absp213IsOwnProfile(){
-    if(!absp213IsProfilePage()) return false;
-    const me = Number(app.user?.user_id || 0);
-    if(!me) return false;
-
-    const pid = (typeof extractId === 'function')
-      ? (extractId(location.href) || extractId(document.body?.innerHTML || ''))
-      : null;
-
-    if(pid) return Number(pid) === me;
-
-    const title = String(document.title || '').toLowerCase();
-    return !!(app.user?.name && title.includes(String(app.user.name).toLowerCase()));
-  }
-
-  function absp213ForceIcon(){
-    const btn = document.getElementById('ebsf2-btn') || document.getElementById('absp-main');
-    if(!btn) return;
-    btn.style.display = absp213IsOwnProfile() ? 'block' : 'none';
-  }
-
-  function absp213Difficulty(total, labelText){
-    const l = String(labelText || '').toLowerCase();
-    if(l.includes('avoid')) return 'avoid';
-    if(l.includes('difficult') || l.includes('hard')) return 'difficult';
-    if(l.includes('fair') || l.includes('good')) return 'fair';
-    if(l.includes('easy')) return 'easy';
-    if(total && app.total){
-      const r = Number(total) / Number(app.total);
-      if(r <= .75) return 'easy';
-      if(r <= 1.15) return 'fair';
-      if(r <= 1.75) return 'difficult';
-      return 'avoid';
-    }
-    return 'unknown';
-  }
-
-  function absp213UpdateBadge(b, intel){
-    const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total){
-      b.className = 'ebsf2-badge';
-      b.textContent = 'N/A';
-      b.title = 'No intel yet';
-      return;
-    }
-
-    const diff = absp213Difficulty(total, intel?.label);
-    b.className = 'ebsf2-badge ebsf2-' + diff;
-    b.textContent = fmt(total);
-    b.title = `${intel?.source || 'intel'} • ${diff} • ${Math.round(Number(intel?.confidence || 0))}% • Tap for details`;
-  }
-
-  // Re-apply full colors even if a prior Lite install left different styling.
-  if(typeof updateBadge === 'function'){
-    updateBadge = absp213UpdateBadge;
-  }
-
-  function absp213IsBadRowText(text){
-    text = String(text || '').replace(/\s+/g, ' ').trim();
-    return !text ||
-      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
-      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
-      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(text) ||
-      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
-  }
-
-  function absp213IsMemberRow(row){
-    if(!row) return false;
-    const text = (row.textContent || '').replace(/\s+/g,' ').trim();
-    const rect = row.getBoundingClientRect?.();
-    if(!rect || rect.width < 230 || rect.height < 22 || rect.bottom < -150 || rect.top > window.innerHeight + 900) return false;
-    if(absp213IsBadRowText(text)) return false;
-
-    const hasStatusOrAttack = /\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text);
-    const hasHonor = !!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
-    return hasStatusOrAttack && hasHonor;
-  }
-
-  function absp213MemberArea(row){
-    const rr = row.getBoundingClientRect?.();
-    if(!rr) return null;
-
-    const cells = [...(row.querySelectorAll?.('td,[class*="cell"],[class*="column"]') || [])];
-    for(const c of cells.slice(0, 2)){
-      const r = c.getBoundingClientRect?.();
-      const t = (c.textContent || '').replace(/\s+/g,' ').trim();
-      if(!r || r.width < 75 || r.height < 16) continue;
-      if(r.left > rr.left + rr.width * .58) continue;
-      if(/Score|Status|Attack|Okay/i.test(t) && t.length < 45) continue;
-      return c;
-    }
-
-    for(const c of [...(row.children || [])].slice(0, 3)){
-      const r = c.getBoundingClientRect?.();
-      if(r && r.width > 75 && r.height > 16 && r.left < rr.left + rr.width * .58) return c;
-    }
-
-    return null;
-  }
-
-  function absp213HonorMount(row){
-    const area = absp213MemberArea(row);
-    if(!area) return null;
-
-    const rr = row.getBoundingClientRect?.();
-    const candidates = [...(area.querySelectorAll?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]') || [])];
-
-    let best = null;
-    let score = -999;
-
-    for(const el of candidates){
-      if(el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) continue;
-      const r = el.getBoundingClientRect?.();
-      if(!r || r.width < 45 || r.height < 10 || r.width > 300 || r.height > 95) continue;
-      if(rr && r.left > rr.left + rr.width * .58) continue;
-
-      const text = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g,' ').trim();
-      if(/Score|Status|Attack|Okay/i.test(text) && text.length < 50) continue;
-
-      const cls = String(el.className || '').toLowerCase();
-      const st = String(el.getAttribute('style') || '').toLowerCase();
-
-      let s = 0;
-      if(cls.includes('honor')) s += 55;
-      if(cls.includes('name')) s += 35;
-      if(st.includes('background-image')) s += 35;
-      if(el.tagName === 'IMG') s += 20;
-      if(el.href && /profiles\.php/i.test(el.href)) s += 25;
-      s += Math.min(35, r.width / 8);
-
-      if(s > score){ score = s; best = el; }
-    }
-
-    if(!best) return null;
-
-    const p = best.parentElement || best;
-    const pr = p.getBoundingClientRect?.();
-    if(pr && rr && pr.left < rr.left + rr.width * .58 && pr.width <= 325 && pr.height <= 115){
-      return p;
-    }
-
-    return best;
-  }
-
-  function absp213CleanWrongBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
-
-      const row = b.closest?.('tr,li,[class*="row"],[class*="member"]');
-      if(row){
-        const br = b.getBoundingClientRect?.();
-        const rr = row.getBoundingClientRect?.();
-        if(!absp213IsMemberRow(row) || (br && rr && br.left > rr.left + rr.width * .62)){
-          b.remove();
-        }
-        return;
-      }
-
-      if(!absp213IsProfilePage()) b.remove();
-    });
-  }
-
-  async function absp213PaintFactionRows(){
-    if(!absp213IsFactionPage()) return;
-
-    const rowList = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')]
-      .filter(absp213IsMemberRow)
-      .slice(0, 100);
-
-    for(const row of rowList){
-      const mount = absp213HonorMount(row);
-      if(!mount) continue;
-
-      let intel = null;
-      let id = null;
-
-      try {
-        if(typeof intelFor === 'function'){
-          const out = await intelFor(row, mount);
-          if(out && out.intel !== undefined){
-            intel = out.intel;
-            id = out.id;
-          } else {
-            intel = out;
-          }
-        }
-      } catch(e) {}
-
-      if(typeof attach === 'function'){
-        attach(mount, intel);
-      } else {
-        let b = mount.querySelector(':scope > .ebsf2-badge');
-        if(!b){
-          b = document.createElement('span');
-          b.className = 'ebsf2-badge';
-          const cs = getComputedStyle(mount);
-          if(cs.position === 'static') mount.style.position = 'relative';
-          mount.appendChild(b);
-        }
-        absp213UpdateBadge(b, intel);
-      }
-
-      const badge = mount.querySelector?.(':scope > .ebsf2-badge');
-      if(badge){
-        badge.dataset.abspHonorOnly = '1';
-        if(id) badge.dataset.targetId = String(id);
-      }
-    }
-
-    absp213CleanWrongBadges();
-  }
-
-  function absp213MakeDraggable(){
-    const btn = document.getElementById('ebsf2-btn') || document.getElementById('absp-main');
-    if(!btn || btn.dataset.abspDragReady === '1') return;
-    btn.dataset.abspDragReady = '1';
-    btn.style.width = '42px';
-    btn.style.height = '42px';
-    btn.style.fontSize = '22px';
-    btn.style.touchAction = 'none';
-
-    let saved = null;
-    try{ saved = JSON.parse(GM_getValue('ebsf2_icon_pos','null') || 'null'); }catch(e){}
-    if(saved && saved.left != null && saved.top != null){
-      btn.style.left = saved.left + 'px';
-      btn.style.top = saved.top + 'px';
-      btn.style.bottom = 'auto';
-    }
-
-    let dragging=false, moved=false, sx=0, sy=0, sl=0, st=0;
-
-    const down = (e)=>{
-      const p = e.touches ? e.touches[0] : e;
-      dragging = true; moved = false; sx = p.clientX; sy = p.clientY;
       const r = btn.getBoundingClientRect();
       sl = r.left; st = r.top;
     };
-
-    const move = (e)=>{
-      if(!dragging) return;
+    const move = e => {
+      if(!drag) return;
       const p = e.touches ? e.touches[0] : e;
       const dx = p.clientX - sx, dy = p.clientY - sy;
       if(Math.abs(dx) + Math.abs(dy) > 5) moved = true;
-      const left = Math.max(4, Math.min(window.innerWidth - btn.offsetWidth - 4, sl + dx));
-      const top = Math.max(54, Math.min(window.innerHeight - btn.offsetHeight - 54, st + dy));
+      const left = Math.max(4, Math.min(innerWidth - btn.offsetWidth - 4, sl + dx));
+      const top = Math.max(54, Math.min(innerHeight - btn.offsetHeight - 54, st + dy));
       btn.style.left = left + 'px';
       btn.style.top = top + 'px';
       btn.style.bottom = 'auto';
       e.preventDefault?.();
     };
-
-    const up = (e)=>{
-      if(!dragging) return;
-      dragging = false;
-      GM_setValue('ebsf2_icon_pos', JSON.stringify({left:parseInt(btn.style.left || '16'), top:parseInt(btn.style.top || '120')}));
+    const up = e => {
+      if(!drag) return;
+      drag = false;
+      GM_setValue(KEY.icon, JSON.stringify({left:parseInt(btn.style.left || '16'), top:parseInt(btn.style.top || '120')}));
       if(moved){
         e.preventDefault?.();
         e.stopPropagation?.();
-        setTimeout(()=>{ moved=false; }, 80);
+        setTimeout(() => moved = false, 80);
       }
     };
 
@@ -2145,1194 +381,53 @@
     document.addEventListener('mouseup', up, true);
 
     const oldClick = btn.onclick;
-    btn.onclick = (e)=>{
-      if(moved) return;
-      oldClick?.(e);
-    };
+    btn.onclick = e => { if(!moved) oldClick?.(e); };
   }
 
-  // Replace old heavy paint wrappers with one balanced wrapper.
-  const absp213OriginalPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(absp213OriginalPaintAll && !window.__absp213WrappedPaint){
-    window.__absp213WrappedPaint = true;
-    paintAll = async function(force){
-      let r;
-      try{
-        // Avoid calling older paint loops on faction pages; they caused duplicates/blink.
-        if(!absp213IsFactionPage()) r = await absp213OriginalPaintAll(force);
-      }catch(e){}
-      await absp213PaintFactionRows();
-      absp213CleanWrongBadges();
-      absp213ForceIcon();
-      absp213MakeDraggable();
-      return r;
-    };
-  }
-
-  function absp213SchedulePaint(delay=650){
-    clearTimeout(window.__absp213PaintTimer);
-    window.__absp213PaintTimer = setTimeout(async ()=>{
-      await absp213PaintFactionRows();
-      absp213CleanWrongBadges();
-      absp213ForceIcon();
-      absp213MakeDraggable();
-    }, delay);
-  }
-
-  // Stop older repeating intervals from doing most of the work by overwriting their target functions.
-  if(typeof ebsf208PaintFactionRows === 'function') ebsf208PaintFactionRows = absp213PaintFactionRows;
-  if(typeof ebsf210PaintFactionRows === 'function') ebsf210PaintFactionRows = absp213PaintFactionRows;
-  if(typeof ebsf211PaintFactionRows === 'function') ebsf211PaintFactionRows = absp213PaintFactionRows;
-  if(typeof ebsf210CleanBadBadges === 'function') ebsf210CleanBadBadges = absp213CleanWrongBadges;
-  if(typeof ebsf211CleanWrongBadges === 'function') ebsf211CleanWrongBadges = absp213CleanWrongBadges;
-
-  if(typeof ebsf202IsProfilePage === 'function') ebsf202IsProfilePage = absp213IsOwnProfile;
-  if(typeof ebsf205IsRealProfilePage === 'function') ebsf205IsRealProfilePage = absp213IsOwnProfile;
-  if(typeof ebsf208IsOwnProfilePage === 'function') ebsf208IsOwnProfilePage = absp213IsOwnProfile;
-  if(typeof ebsf210IsOwnProfile === 'function') ebsf210IsOwnProfile = absp213IsOwnProfile;
-  if(typeof ebsf202UpdateMainIconVisibility === 'function') ebsf202UpdateMainIconVisibility = absp213ForceIcon;
-  if(typeof ebsf205ForceIconVisibility === 'function') ebsf205ForceIconVisibility = absp213ForceIcon;
-  if(typeof ebsf208ForceMainIcon === 'function') ebsf208ForceMainIcon = absp213ForceIcon;
-  if(typeof ebsf210ForceOwnIcon === 'function') ebsf210ForceOwnIcon = absp213ForceIcon;
-
-  // One MutationObserver, throttled. No constant 1-second cleanup.
-  if(!window.__absp213Observer){
-    window.__absp213Observer = true;
-    try{
-      const obs = new MutationObserver(()=>absp213SchedulePaint(850));
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
-
-    let last = location.href;
-    setInterval(()=>{
-      if(location.href !== last){
-        last = location.href;
-        absp213SchedulePaint(700);
-      } else {
-        absp213ForceIcon();
-      }
-    }, 2000);
-
-    [600, 1800, 4000, 8000].forEach(t=>setTimeout(()=>absp213SchedulePaint(100), t));
-  }
-
-  absp213MakeDraggable();
-  absp213ForceIcon();
-  absp213SchedulePaint(300);
-
-
-
-  /* v2.1.4 Row restore patch
-     Problem fixed:
-     - PDA faction/hospital/jail enemy rows were being skipped because row structure is inconsistent.
-     - Profile badges worked, but faction rows had no badge.
-     Solution:
-     - Find honor/name plates directly inside the enemy list/table area.
-     - Attach only inside the left/member honor plate, never Attack/Status/Score/header.
-     - Keep one throttled repaint, no aggressive loop.
-  */
-
-  function absp214PageLooksLikeFactionList(){
-    const text = (document.body?.innerText || '').slice(0, 9000);
-    return /factions\.php/i.test(location.href) ||
-           /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain|Okay\s+Attack/i.test(text);
-  }
-
-  function absp214BadContextText(text){
-    text = String(text || '').replace(/\s+/g, ' ').trim();
-    return /Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:|Score\s+Status|Status\s+Attack/i.test(text) ||
-           /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
-  }
-
-  function absp214LooksLikeHonorPlate(el){
-    if(!el || el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) return false;
-    const r = el.getBoundingClientRect?.();
-    if(!r) return false;
-
-    // PDA honor bars are usually left-side, wide/short image/name plates.
-    if(r.width < 70 || r.width > 290 || r.height < 12 || r.height > 70) return false;
-    if(r.bottom < -80 || r.top > window.innerHeight + 700) return false;
-
-    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-    if(/Score|Status|Attack|Okay|Members|Lead Target/i.test(text) && text.length < 50) return false;
-
-    const cls = String(el.className || '').toLowerCase();
-    const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-    if(cls.includes('honor') || cls.includes('name')) return true;
-    if(st.includes('background-image')) return true;
-    if(el.tagName === 'IMG') return true;
-    if(el.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]')) return true;
-
-    return false;
-  }
-
-  function absp214FindRowForPlate(plate){
-    if(!plate) return null;
-
-    let node = plate;
-    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
-      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
-      const r = node.getBoundingClientRect?.();
-      if(!r || r.width < 180 || r.height < 18) continue;
-
-      // Real enemy rows contain status/attack or the score cell nearby.
-      if(/\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text) && !absp214BadContextText(text)){
-        return node;
-      }
-    }
-
-    return plate.parentElement || plate;
-  }
-
-  function absp214PlateIsLeftMemberArea(plate, row){
-    const pr = plate.getBoundingClientRect?.();
-    const rr = row?.getBoundingClientRect?.();
-    if(!pr || !rr) return false;
-
-    // Must live in the left/member side. This prevents badges in Attack column.
-    if(pr.left > rr.left + rr.width * 0.60) return false;
-
-    // Ignore the faction/team header bars.
-    const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
-    if(absp214BadContextText(rowText)) return false;
-
-    return true;
-  }
-
-  function absp214TargetIdForPlate(plate, row){
-    const blob = [
-      location.href,
-      plate?.innerHTML,
-      plate?.parentElement?.innerHTML,
-      row?.innerHTML
-    ].filter(Boolean).join(' ');
-    return typeof extractId === 'function' ? extractId(blob) : null;
-  }
-
-  function absp214IntelFromKnown(id){
-    if(!id) return null;
-    try{
-      if(typeof getIntel === 'function'){
-        const own = getIntel(id);
-        if(own) return own;
-      }
-    }catch(e){}
-    try{
-      if(typeof bsfGetBspCacheIntel === 'function'){
-        const bsp = bsfGetBspCacheIntel(id);
-        if(bsp) return bsp;
-      }
-    }catch(e){}
-    try{
-      if(typeof bspIntel === 'function'){
-        const bsp2 = bspIntel(id);
-        if(bsp2) return bsp2;
-      }
-    }catch(e){}
-    return null;
-  }
-
-  function absp214CreateOrUpdateBadge(plate, intel, id){
-    if(!plate) return;
-
-    let badge = plate.querySelector(':scope > .ebsf2-badge');
-    if(!badge){
-      badge = document.createElement('span');
-      badge.className = 'ebsf2-badge';
-      const cs = getComputedStyle(plate);
-      if(cs.position === 'static') plate.style.position = 'relative';
-      plate.appendChild(badge);
-    }
-
-    if(typeof updateBadge === 'function') updateBadge(badge, intel);
-    else {
-      badge.textContent = intel?.total ? String(intel.total) : 'N/A';
-    }
-
-    if(id) badge.dataset.targetId = String(id);
-    badge.dataset.absp214 = '1';
-    badge.style.pointerEvents = 'auto';
-    badge.style.cursor = 'pointer';
-  }
-
-  async function absp214FetchIntelIfMissing(id){
-    if(!id || !app?.key) return null;
-    try{
-      if(typeof req === 'function'){
-        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
-        if(r?.ok && r.player){
-          if(typeof saveIntel === 'function') saveIntel(id, r.player);
-          return r.player;
-        }
-      }
-    }catch(e){}
-    return null;
-  }
-
-  async function absp214PaintVisiblePlates(){
-    if(!absp214PageLooksLikeFactionList()) return;
-
-    const candidates = [
-      ...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]')
-    ];
-
-    let painted = 0;
-    const seenRows = new Set();
-
-    for(const raw of candidates){
-      if(painted >= 85) break;
-
-      // Prefer plate parent when the image itself is inside the plate.
-      let plate = raw;
-      const parent = raw.parentElement;
-      if(parent && absp214LooksLikeHonorPlate(parent)) plate = parent;
-
-      if(!absp214LooksLikeHonorPlate(plate)) continue;
-
-      const row = absp214FindRowForPlate(plate);
-      if(!row || !absp214PlateIsLeftMemberArea(plate, row)) continue;
-
-      const rr = row.getBoundingClientRect?.();
-      const key = rr ? `${Math.round(rr.top)}:${Math.round(rr.left)}:${Math.round(rr.width)}` : row.outerHTML.slice(0,50);
-      if(seenRows.has(key)) continue;
-      seenRows.add(key);
-
-      const id = absp214TargetIdForPlate(plate, row);
-      let intel = absp214IntelFromKnown(id);
-
-      // If BSP/FF data is visible in the page but no ID was captured, still show N/A on plate.
-      absp214CreateOrUpdateBadge(plate, intel, id);
-      painted++;
-
-      if(id && !intel){
-        absp214FetchIntelIfMissing(id).then(found=>{
-          if(found) absp214CreateOrUpdateBadge(plate, found, id);
-        });
-      }
-    }
-
-    absp214CleanBadges();
-  }
-
-  function absp214CleanBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
-
-      const plate = b.parentElement;
-      const row = absp214FindRowForPlate(plate);
-
-      if(absp214PageLooksLikeFactionList()){
-        if(!plate || !row || !absp214LooksLikeHonorPlate(plate) || !absp214PlateIsLeftMemberArea(plate,row)){
-          b.remove();
-        }
-      }
-    });
-  }
-
-  // Override older row painters with the restored plate painter.
-  if(typeof absp213PaintFactionRows === 'function') absp213PaintFactionRows = absp214PaintVisiblePlates;
-  if(typeof ebsf211PaintFactionRows === 'function') ebsf211PaintFactionRows = absp214PaintVisiblePlates;
-  if(typeof ebsf210PaintFactionRows === 'function') ebsf210PaintFactionRows = absp214PaintVisiblePlates;
-  if(typeof ebsf208PaintFactionRows === 'function') ebsf208PaintFactionRows = absp214PaintVisiblePlates;
-
-  const absp214OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(absp214OldPaintAll && !window.__absp214PaintWrapped){
-    window.__absp214PaintWrapped = true;
-    paintAll = async function(force){
-      let out;
-      try{
-        if(!absp214PageLooksLikeFactionList()) out = await absp214OldPaintAll(force);
-      }catch(e){}
-      await absp214PaintVisiblePlates();
-      if(typeof absp213ForceIcon === 'function') absp213ForceIcon();
-      return out;
-    };
-  }
-
-  function absp214Schedule(delay=500){
-    clearTimeout(window.__absp214Timer);
-    window.__absp214Timer = setTimeout(()=>absp214PaintVisiblePlates(), delay);
-  }
-
-  if(!window.__absp214Observer){
-    window.__absp214Observer = true;
-
-    [400, 1200, 2500, 5000].forEach(t=>setTimeout(()=>absp214Schedule(50), t));
-
-    try{
-      const obs = new MutationObserver(()=>absp214Schedule(650));
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
-
-    let last = location.href;
-    setInterval(()=>{
-      if(location.href !== last){
-        last = location.href;
-        absp214Schedule(600);
-      }
-    }, 1500);
-  }
-
-  absp214Schedule(250);
-
-
-
-  /* v2.1.5 Risk-adjusted confidence
-     Fix:
-     - Avoid targets should not show high confidence just because FF/BSP has a number.
-     - The higher the target stats are above yours, the lower the displayed confidence.
-     - Spy/manual exact intel can stay stronger.
-  */
-
-  function absp215SourceIsExact(intel){
-    const s = String(intel?.source || '').toLowerCase();
-    return s.includes('spy') || s.includes('manual') || s.includes('exact');
-  }
-
-  function absp215RiskAdjustedConfidence(intel){
-    let conf = Number(intel?.confidence || 0);
-    const total = Number(intel?.best_total || intel?.total || 0);
-    const mine = Number(app?.total || 0);
-
-    if(!total || !mine) return conf;
-
-    // Exact sources are trusted more, but still cap impossible-range confidence slightly.
-    const exact = absp215SourceIsExact(intel);
-    const ratio = total / mine;
-
-    if(exact){
-      if(ratio >= 10) conf = Math.min(conf || 75, 75);
-      else if(ratio >= 5) conf = Math.min(conf || 80, 80);
-      return Math.max(1, Math.min(100, Math.round(conf)));
-    }
-
-    // Risk/out-of-range caps for estimates.
-    // This makes "Avoid" stop looking like a sure prediction.
-    let cap = 100;
-    if(ratio >= 20) cap = 18;       // wildly above you
-    else if(ratio >= 10) cap = 25;  // massive avoid
-    else if(ratio >= 5) cap = 35;   // strong avoid
-    else if(ratio >= 2.5) cap = 45; // avoid/difficult edge
-    else if(ratio >= 1.75) cap = 55;// difficult
-    else if(ratio >= 1.15) cap = 65;// fair/good-ish upper
-    else cap = 78;                  // easy/fair can stay decent
-
-    if(!conf) conf = cap;
-    conf = Math.min(conf, cap);
-
-    return Math.max(1, Math.min(100, Math.round(conf)));
-  }
-
-  function absp215RiskLabel(intel){
-    const total = Number(intel?.best_total || intel?.total || 0);
-    const mine = Number(app?.total || 0);
-    if(!total || !mine) return '';
-    const ratio = total / mine;
-    if(ratio >= 10) return 'Very high gap';
-    if(ratio >= 5) return 'High stat gap';
-    if(ratio >= 2.5) return 'Big stat gap';
-    if(ratio >= 1.75) return 'Risky';
-    return '';
-  }
-
-  // Patch badge title confidence.
-  const absp215OldUpdateBadge = typeof updateBadge === 'function' ? updateBadge : null;
-  if(absp215OldUpdateBadge){
-    updateBadge = function(b, intel){
-      if(intel){
-        intel = {...intel, confidence: absp215RiskAdjustedConfidence(intel)};
-      }
-      absp215OldUpdateBadge(b, intel);
-    };
-  }
-
-  // Patch popup confidence display by overriding ebsf203Conf, if that full popup path exists.
-  if(typeof ebsf203Conf === 'function'){
-    const absp215OldConf = ebsf203Conf;
-    ebsf203Conf = function(conf){
-      // Direct confidence calls do not include total, so this is only a fallback.
-      const c = Math.max(0, Math.min(100, Math.round(Number(conf || 0))));
-      return absp215OldConf(c);
-    };
-  }
-
-  // Patch popup maker for v2.0.3+ full popup path.
-  if(typeof ebsf202MakePopup === 'function'){
-    const absp215OldPopup = ebsf202MakePopup;
-    ebsf202MakePopup = function(targetId, intel, anchor){
-      if(intel){
-        intel = {...intel, confidence: absp215RiskAdjustedConfidence(intel)};
-      }
-      absp215OldPopup(targetId, intel, anchor);
-
-      const pop = document.querySelector('.ebsf2-pop');
-      const note = absp215RiskLabel(intel);
-      if(pop && note && !pop.querySelector('.absp215-risk-note')){
-        const body = pop.querySelector('.ebsf2-pop-body');
-        if(body){
-          const div = document.createElement('div');
-          div.className = 'absp215-risk-note';
-          div.style.cssText = 'margin-top:7px;padding:6px;border-radius:8px;background:#431407;color:#fdba74;border:1px solid #f97316;font-weight:900';
-          div.textContent = 'Confidence reduced: ' + note;
-          body.appendChild(div);
-        }
-      }
-    };
-  }
-
-  // Patch generic popup path from balanced direct badge intel, if present.
-  if(typeof ebsf202BadgeIntelFromElement === 'function'){
-    const absp215OldBadgeIntel = ebsf202BadgeIntelFromElement;
-    ebsf202BadgeIntelFromElement = function(badge){
-      const got = absp215OldBadgeIntel(badge);
-      if(got?.intel){
-        got.intel = {...got.intel, confidence: absp215RiskAdjustedConfidence(got.intel)};
-      }
-      return got;
-    };
-  }
-
-  // Adjust stored visible/BSP intel as it is saved.
-  if(typeof saveIntel === 'function' && !window.__absp215SaveIntelWrapped){
-    window.__absp215SaveIntelWrapped = true;
-    const absp215OldSaveIntel = saveIntel;
-    saveIntel = function(id, intel){
-      if(intel){
-        intel = {...intel, confidence: absp215RiskAdjustedConfidence(intel)};
-      }
-      return absp215OldSaveIntel(id, intel);
-    };
-  }
-
-
-
-  /* v2.1.6 Locked honor badge engine
-     Fixes:
-     - Stops badge blinking caused by alternating mount points.
-     - Requires a real player ID for faction/war row badges.
-     - Blocks war headers/team headers/score/status/attack columns.
-     - Updates existing badge in place instead of removing/recreating it.
-  */
-
-  function absp216PageIsFactionLike(){
-    const text = (document.body?.innerText || '').slice(0, 9000);
-    return /factions\.php/i.test(location.href) ||
-           /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain|Okay\s+Attack/i.test(text);
-  }
-
-  function absp216BadAreaText(text){
-    text = String(text || '').replace(/\s+/g, ' ').trim();
-    return !text ||
-      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
-      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
-      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:/i.test(text) ||
-      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
-  }
-
-  function absp216ExtractPlayerIdFromRow(row){
-    if(!row || typeof extractId !== 'function') return null;
-    const links = [...(row.querySelectorAll?.('a[href*="profiles.php"], a[href*="loader.php"], a[href*="sid=attack"]') || [])];
-    for(const a of links){
-      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
-      if(id) return Number(id);
-    }
-    const id2 = extractId(row.innerHTML || '');
-    return id2 ? Number(id2) : null;
-  }
-
-  function absp216RowLooksPlayer(row){
-    if(!row) return false;
-    const r = row.getBoundingClientRect?.();
-    if(!r || r.width < 220 || r.height < 22 || r.bottom < -120 || r.top > window.innerHeight + 900) return false;
-
-    const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
-    if(absp216BadAreaText(text)) return false;
-
-    // Must have a real target/player id. This kills header/team N/A badges.
-    const id = absp216ExtractPlayerIdFromRow(row);
-    if(!id) return false;
-
-    // Must look like a member line, not a war status panel.
-    const hasActionStatus = /\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text);
-    const hasHonorThing = !!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
-
-    return hasActionStatus && hasHonorThing;
-  }
-
-  function absp216StablePlate(row){
-    if(!absp216RowLooksPlayer(row)) return null;
-
-    const rr = row.getBoundingClientRect?.();
-    if(!rr) return null;
-
-    // Search only the left side of the row.
-    const leftLimit = rr.left + rr.width * 0.58;
-    const candidates = [...row.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]')];
-
-    let best = null;
-    let bestScore = -999;
-
-    for(const el of candidates){
-      if(el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) continue;
-
-      const r = el.getBoundingClientRect?.();
-      if(!r) continue;
-      if(r.left > leftLimit) continue;
-      if(r.width < 45 || r.width > 300 || r.height < 10 || r.height > 85) continue;
-
-      const localText = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
-      if(/Score|Status|Attack|Okay|Members/i.test(localText) && localText.length < 55) continue;
-
-      const cls = String(el.className || '').toLowerCase();
-      const st = String(el.getAttribute('style') || '').toLowerCase();
-
-      let score = 0;
-      if(cls.includes('honor')) score += 60;
-      if(cls.includes('name')) score += 35;
-      if(st.includes('background-image')) score += 35;
-      if(el.tagName === 'IMG') score += 15;
-      if(el.href && /profiles\.php/i.test(el.href)) score += 25;
-      score += Math.min(35, r.width / 8);
-
-      if(score > bestScore){
-        bestScore = score;
-        best = el;
-      }
-    }
-
-    if(!best) return null;
-
-    // Use one stable mount: parent if parent is still small and left-side, otherwise the element.
-    const p = best.parentElement || best;
-    const pr = p.getBoundingClientRect?.();
-
-    if(pr && pr.left <= leftLimit && pr.width >= 55 && pr.width <= 330 && pr.height >= 12 && pr.height <= 100){
-      return p;
-    }
-    return best;
-  }
-
-  function absp216CurrentIntelForId(id){
-    if(!id) return null;
-    try{
-      if(typeof getIntel === 'function'){
-        const cached = getIntel(id);
-        if(cached) return cached;
-      }
-    }catch(e){}
-    try{
-      if(typeof bspIntel === 'function'){
-        const bsp = bspIntel(id);
-        if(bsp) return bsp;
-      }
-    }catch(e){}
-    try{
-      if(typeof bsfGetBspCacheIntel === 'function'){
-        const bsp2 = bsfGetBspCacheIntel(id);
-        if(bsp2) return bsp2;
-      }
-    }catch(e){}
-    return null;
-  }
-
-  function absp216BadgeUpdate(mount, intel, id){
+  function updateMount(mount, intel, id, kind){
     if(!mount || !id) return;
 
-    // Remove duplicate badges inside the same mount, keep one.
-    const existing = [...mount.querySelectorAll(':scope > .ebsf2-badge')];
-    let badge = existing[0];
-
-    for(const extra of existing.slice(1)) extra.remove();
-
-    if(!badge){
-      badge = document.createElement('span');
-      badge.className = 'ebsf2-badge';
-      const cs = getComputedStyle(mount);
-      if(cs.position === 'static') mount.style.position = 'relative';
-      mount.appendChild(badge);
-    }
-
-    // Never recreate if it already exists; just update text/color.
-    if(typeof updateBadge === 'function') updateBadge(badge, intel);
-    else {
-      badge.textContent = intel?.total ? String(intel.total) : 'N/A';
-    }
-
-    badge.dataset.targetId = String(id);
-    badge.dataset.absp216 = '1';
-    badge.style.pointerEvents = 'auto';
-    badge.style.cursor = 'pointer';
-  }
-
-  async function absp216FetchLater(id, mount){
-    if(!id || !app?.key || !mount) return;
-    try{
-      if(typeof req === 'function'){
-        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
-        if(r?.ok && r.player){
-          if(typeof saveIntel === 'function') saveIntel(id, r.player);
-          absp216BadgeUpdate(mount, r.player, id);
-        }
-      }
-    }catch(e){}
-  }
-
-  async function absp216PaintFactionBadges(){
-    if(!absp216PageIsFactionLike()) return;
-
-    const rows = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"],div')]
-      .filter(absp216RowLooksPlayer)
-      .slice(0, 90);
-
-    const paintedIds = new Set();
-
-    for(const row of rows){
-      const id = absp216ExtractPlayerIdFromRow(row);
-      if(!id || paintedIds.has(id)) continue;
-
-      const mount = absp216StablePlate(row);
-      if(!mount) continue;
-
-      const intel = absp216CurrentIntelForId(id);
-      absp216BadgeUpdate(mount, intel, id);
-      paintedIds.add(id);
-
-      if(!intel) absp216FetchLater(id, mount);
-    }
-
-    absp216CleanBadges();
-  }
-
-  function absp216CleanBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
-
-      const id = b.dataset.targetId;
-      const mount = b.parentElement;
-
-      // Faction-like pages require a real player id and valid member-row mount.
-      if(absp216PageIsFactionLike()){
-        let row = mount;
-        let valid = false;
-
-        for(let i=0; i<8 && row && row !== document.body; i++, row=row.parentElement){
-          if(absp216RowLooksPlayer(row)){
-            const rowId = absp216ExtractPlayerIdFromRow(row);
-            const stable = absp216StablePlate(row);
-            valid = !!(rowId && String(rowId) === String(id) && stable === mount);
-            break;
-          }
-        }
-
-        if(!valid) b.remove();
-      }
-    });
-  }
-
-  // Hard-guard attach so old painter calls cannot place badges on headers/attack/status columns.
-  if(typeof attach === 'function' && !window.__absp216AttachGuarded){
-    window.__absp216AttachGuarded = true;
-    const oldAttach216 = attach;
-    attach = function(mount, intel){
-      if(absp216PageIsFactionLike()){
-        let row = mount;
-        let found = null;
-        for(let i=0; i<8 && row && row !== document.body; i++, row=row.parentElement){
-          if(absp216RowLooksPlayer(row)){ found = row; break; }
-        }
-        if(!found) return;
-
-        const id = absp216ExtractPlayerIdFromRow(found);
-        const stable = absp216StablePlate(found);
-
-        if(!id || stable !== mount) return;
-        absp216BadgeUpdate(mount, intel, id);
-        return;
-      }
-
-      oldAttach216(mount, intel);
-    };
-  }
-
-  // Replace all prior faction painters.
-  if(typeof absp214PaintVisiblePlates === 'function') absp214PaintVisiblePlates = absp216PaintFactionBadges;
-  if(typeof absp213PaintFactionRows === 'function') absp213PaintFactionRows = absp216PaintFactionBadges;
-  if(typeof ebsf211PaintFactionRows === 'function') ebsf211PaintFactionRows = absp216PaintFactionBadges;
-  if(typeof ebsf210PaintFactionRows === 'function') ebsf210PaintFactionRows = absp216PaintFactionBadges;
-  if(typeof ebsf208PaintFactionRows === 'function') ebsf208PaintFactionRows = absp216PaintFactionBadges;
-
-  // One controlled scheduler.
-  function absp216Schedule(delay=650){
-    clearTimeout(window.__absp216Timer);
-    window.__absp216Timer = setTimeout(()=>absp216PaintFactionBadges(), delay);
-  }
-
-  if(!window.__absp216Started){
-    window.__absp216Started = true;
-
-    [450, 1400, 3000].forEach(t=>setTimeout(()=>absp216Schedule(80), t));
-
-    try{
-      const obs = new MutationObserver(()=>absp216Schedule(750));
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
-
-    let last = location.href;
-    setInterval(()=>{
-      if(location.href !== last){
-        last = location.href;
-        absp216Schedule(700);
-      }
-    }, 1800);
-  }
-
-  absp216Schedule(250);
-
-
-
-  /* v2.1.7 Global honor-bar support
-     Fix:
-     - Hospital / jail / travel / other Torn honor bars do not always have faction row text like Okay/Attack.
-     - This adds a lighter global honor painter for visible player honor bars outside faction rows.
-     - Still blocks headers, faction war panels, score boxes, and non-player bars.
-  */
-
-  function absp217IsBadHonorText(text){
-    text = String(text || '').replace(/\s+/g, ' ').trim();
-    return !text ||
-      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
-      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
-      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:/i.test(text) ||
-      /Battle Stats|Strength|Defense|Speed|Dexterity|Energy|Happy|Nerve/i.test(text) ||
-      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
-  }
-
-  function absp217PageCanHaveHonorBars(){
-    const text = (document.body?.innerText || '').slice(0, 9000);
-    return /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
-           /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(text);
-  }
-
-  function absp217ExtractIdNear(el){
-    if(!el || typeof extractId !== 'function') return null;
-
-    // Check nearest links first.
-    const nearLinks = [
-      ...(el.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
-      ...(el.parentElement?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || [])
-    ];
-
-    for(const a of nearLinks){
-      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
-      if(id) return Number(id);
-    }
-
-    let node = el;
-    for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
-      const blob = [
-        node.getAttribute?.('href'),
-        node.getAttribute?.('onclick'),
-        node.getAttribute?.('data-user'),
-        node.getAttribute?.('data-userid'),
-        node.getAttribute?.('data-id'),
-        node.innerHTML
-      ].filter(Boolean).join(' ');
-      const id = extractId(blob);
-      if(id) return Number(id);
-    }
-
-    return null;
-  }
-
-  function absp217IsHonorPlate(el){
-    if(!el || el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) return false;
-
-    const r = el.getBoundingClientRect?.();
-    if(!r) return false;
-
-    // Honor bars are usually rectangular and name-like, not huge panels.
-    if(r.width < 70 || r.width > 360 || r.height < 10 || r.height > 95) return false;
-    if(r.bottom < -120 || r.top > window.innerHeight + 800) return false;
-
-    const text = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
-    if(absp217IsBadHonorText(text) && text.length < 80) return false;
-
-    const cls = String(el.className || '').toLowerCase();
-    const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-    if(cls.includes('honor') || cls.includes('name')) return true;
-    if(st.includes('background-image')) return true;
-
-    // Image inside a likely honor plate.
-    if(el.tagName === 'IMG'){
-      const p = el.parentElement;
-      const pr = p?.getBoundingClientRect?.();
-      if(pr && pr.width >= 70 && pr.width <= 360 && pr.height >= 10 && pr.height <= 95) return true;
-    }
-
-    if(el.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]')) return true;
-
-    return false;
-  }
-
-  function absp217StableHonorMount(raw){
-    if(!raw) return null;
-
-    // Prefer a compact parent that is the full plate, not just the internal image.
-    let best = raw;
-    let node = raw.parentElement;
-
-    for(let i=0; i<3 && node && node !== document.body; i++, node=node.parentElement){
-      if(absp217IsHonorPlate(node)){
-        const nr = node.getBoundingClientRect?.();
-        const br = best.getBoundingClientRect?.();
-        if(nr && br && nr.width >= br.width && nr.width <= 380 && nr.height <= 105){
-          best = node;
-        }
-      }
-    }
-
-    return absp217IsHonorPlate(best) ? best : null;
-  }
-
-  function absp217LooksLikeHeaderOrWarPanel(mount){
-    const r = mount.getBoundingClientRect?.();
-    if(!r) return true;
-
-    const text = (mount.textContent || mount.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
-
-    // Header/war title bars are usually high up, centered/wide, and have no nearby profile id.
-    if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(text)) return true;
-
-    // If no player id nearby, don't paint on list pages. Profile page can still use visible profile ID/title.
-    const id = absp217ExtractIdNear(mount);
-    if(!id && !/profiles\.php/i.test(location.href)) return true;
-
-    return false;
-  }
-
-  function absp217KnownIntel(id){
-    if(!id) return null;
-    try{
-      if(typeof getIntel === 'function'){
-        const cached = getIntel(id);
-        if(cached) return cached;
-      }
-    }catch(e){}
-    try{
-      if(typeof bspIntel === 'function'){
-        const bsp = bspIntel(id);
-        if(bsp) return bsp;
-      }
-    }catch(e){}
-    try{
-      if(typeof bsfGetBspCacheIntel === 'function'){
-        const bsp2 = bsfGetBspCacheIntel(id);
-        if(bsp2) return bsp2;
-      }
-    }catch(e){}
-    return null;
-  }
-
-  function absp217UpdateMount(mount, intel, id){
-    if(!mount) return;
-
-    let b = mount.querySelector(':scope > .ebsf2-badge');
+    let b = mount.querySelector(':scope > .absp-badge');
     if(!b){
       b = document.createElement('span');
-      b.className = 'ebsf2-badge';
+      b.className = 'absp-badge';
       const cs = getComputedStyle(mount);
       if(cs.position === 'static') mount.style.position = 'relative';
       mount.appendChild(b);
     }
 
-    if(typeof updateBadge === 'function') updateBadge(b, intel);
-    else b.textContent = intel?.total ? String(intel.total) : 'N/A';
+    // One badge per mount.
+    [...mount.querySelectorAll(':scope > .absp-badge')].slice(1).forEach(x => x.remove());
 
-    if(id) b.dataset.targetId = String(id);
-    b.dataset.absp217 = '1';
-    b.style.pointerEvents = 'auto';
-    b.style.cursor = 'pointer';
-  }
-
-  async function absp217FetchIntel(id, mount){
-    if(!id || !app?.key || !mount) return;
-    try{
-      if(typeof req === 'function'){
-        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
-        if(r?.ok && r.player){
-          if(typeof saveIntel === 'function') saveIntel(id, r.player);
-          absp217UpdateMount(mount, r.player, id);
-        }
-      }
-    }catch(e){}
-  }
-
-  async function absp217PaintGlobalHonorBars(){
-    if(!absp217PageCanHaveHonorBars()) return;
-
-    const rawCandidates = [...document.querySelectorAll(
-      '[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]'
-    )];
-
-    const seen = new Set();
-    let count = 0;
-
-    for(const raw of rawCandidates){
-      if(count >= 100) break;
-
-      const mount = absp217StableHonorMount(raw);
-      if(!mount) continue;
-      if(absp217LooksLikeHeaderOrWarPanel(mount)) continue;
-
-      const mr = mount.getBoundingClientRect?.();
-      const key = mr ? `${Math.round(mr.left)}:${Math.round(mr.top)}:${Math.round(mr.width)}:${Math.round(mr.height)}` : mount.outerHTML.slice(0,80);
-      if(seen.has(key)) continue;
-      seen.add(key);
-
-      const id = absp217ExtractIdNear(mount) || (typeof extractId === 'function' ? extractId(location.href) : null);
-      if(!id && !/profiles\.php/i.test(location.href)) continue;
-
-      let intel = absp217KnownIntel(id);
-
-      // On profile pages, visible FF/BSP text can be used.
-      if(!intel && /profiles\.php/i.test(location.href) && typeof visibleIntel === 'function'){
-        try{ intel = visibleIntel(); }catch(e){}
-      }
-
-      absp217UpdateMount(mount, intel, id);
-      count++;
-
-      if(id && !intel) absp217FetchIntel(id, mount);
+    const total = Number(intel?.best_total || intel?.total || 0);
+    if(!total){
+      b.className = 'absp-badge absp-unknown';
+      b.textContent = 'N/A';
+      b.title = 'No usable intel yet';
+    } else {
+      const adjusted = {...intel, confidence:riskConfidence(intel)};
+      const d = diff(total, adjusted.label);
+      b.className = `absp-badge absp-${d}`;
+      b.textContent = fmt(total);
+      b.title = `${adjusted.source || 'intel'} • ${d} • ${adjusted.confidence}% • Tap for details`;
     }
 
-    absp217CleanGlobalBadges();
+    b.dataset.targetId = String(id);
+    b.dataset.kind = kind || 'honor';
   }
 
-  function absp217CleanGlobalBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
-
-      const mount = b.parentElement;
-      if(!mount) return;
-
-      if(!absp217PageCanHaveHonorBars()) return;
-
-      if(!absp217IsHonorPlate(mount) || absp217LooksLikeHeaderOrWarPanel(mount)){
-        b.remove();
-      }
-    });
+  function badText(text){
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    return !text ||
+      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
+      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
+      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:/i.test(text) ||
+      /Battle Stats|Strength|Defense|Speed|Dexterity|Job Information|Property Information|Company|Income|Fees|Rating/i.test(text) ||
+      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
   }
 
-  // Let the strict faction painter still run, but add global honors after it.
-  const absp217OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(absp217OldPaintAll && !window.__absp217PaintWrapped){
-    window.__absp217PaintWrapped = true;
-    paintAll = async function(force){
-      let out;
-      try{ out = await absp217OldPaintAll(force); }catch(e){}
-      await absp217PaintGlobalHonorBars();
-      return out;
-    };
-  }
-
-  function absp217Schedule(delay=700){
-    clearTimeout(window.__absp217Timer);
-    window.__absp217Timer = setTimeout(()=>absp217PaintGlobalHonorBars(), delay);
-  }
-
-  if(!window.__absp217Started){
-    window.__absp217Started = true;
-
-    [500, 1500, 3500, 6500].forEach(t=>setTimeout(()=>absp217Schedule(80), t));
-
-    try{
-      const obs = new MutationObserver(()=>absp217Schedule(900));
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
-
-    let last = location.href;
-    setInterval(()=>{
-      if(location.href !== last){
-        last = location.href;
-        absp217Schedule(700);
-      }
-    }, 1800);
-  }
-
-  absp217Schedule(250);
-
-
-
-  /* v2.1.8 No-chat / no-orphan badge guard
-     Fixes:
-     - Global honor painter was catching faction chat avatars/names on Home.
-     - Removes blinking N/A boxes from chat popup and empty Faction header spots.
-     - Requires real player/profile context outside profile pages.
-     - Keeps real faction/hospital/jail/profile honor bars.
-  */
-
-  function absp218IsHomeOrChatArea(el){
-    if(!el) return false;
-
-    const text = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
-    const pageText = (document.body?.innerText || '').slice(0, 4000);
-
-    // Home page chat popup / faction chat message list clues.
-    if(/Type your message here|Faction\s*$|Good job!|Join an organized crime|No active chain/i.test(text)) return true;
-
-    // If the current page is Home and the element is inside the floating chat area, block it.
-    if(/Home/i.test(document.title || '') && /Type your message here|Faction/i.test(pageText)){
-      const r = el.getBoundingClientRect?.();
-      if(r && r.left > window.innerWidth * 0.25 && r.top > 250) return true;
-    }
-
-    // Class/id clues for chat panels.
-    let node = el;
-    for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
-      const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
-      if(/chat|message|msg|conversation|dialog|popup|modal/.test(ident)) return true;
-      const nt = (node.textContent || '').replace(/\s+/g, ' ').trim();
-      if(/Type your message here|Faction\s*$/.test(nt) && nt.length < 2000) return true;
-    }
-
-    return false;
-  }
-
-  function absp218AllowedPageForGlobalHonor(){
-    const url = location.href;
-    const title = document.title || '';
-    const text = (document.body?.innerText || '').slice(0, 7000);
-
-    // Never run global honor painter on Home/chat; faction rows have their own painter.
-    if(/^Home$/i.test(title.trim()) || /home/i.test(url)) {
-      return false;
-    }
-
-    return /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(url) ||
-           /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(text);
-  }
-
-  function absp218HasRealPlayerContext(mount){
-    if(!mount) return false;
-
-    // Profile page can use profile XID or page profile.
-    if(/profiles\.php/i.test(location.href)) return true;
-
-    // Outside profiles, require a real nearby profile/attack link.
-    const id = typeof absp217ExtractIdNear === 'function'
-      ? absp217ExtractIdNear(mount)
-      : (typeof extractId === 'function' ? extractId(mount.outerHTML || '') : null);
-
-    return !!id;
-  }
-
-  function absp218RemoveBadBadges(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
-
-      const mount = b.parentElement;
-      if(!mount) return;
-
-      if(absp218IsHomeOrChatArea(mount) || absp218IsHomeOrChatArea(b)){
-        b.remove();
-        return;
-      }
-
-      // Remove orphan badges without target/player context, unless it is a profile page badge.
-      const hasId = !!b.dataset.targetId || absp218HasRealPlayerContext(mount);
-      if(!hasId){
-        b.remove();
-        return;
-      }
-
-      // Remove top/header orphan bars.
-      const text = (mount.textContent || mount.parentElement?.textContent || '').replace(/\s+/g,' ').trim();
-      if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Members\s+Score|Status\s+Attack/i.test(text)){
-        b.remove();
-      }
-    });
-  }
-
-  // Override global painter with chat/home guard.
-  if(typeof absp217PaintGlobalHonorBars === 'function'){
-    const absp218OldGlobal = absp217PaintGlobalHonorBars;
-    absp217PaintGlobalHonorBars = async function(){
-      if(!absp218AllowedPageForGlobalHonor()){
-        absp218RemoveBadBadges();
-        return;
-      }
-      await absp218OldGlobal();
-      absp218RemoveBadBadges();
-    };
-  }
-
-  // Guard update mount so chat/home badges never get created.
-  if(typeof absp217UpdateMount === 'function' && !window.__absp218UpdateGuarded){
-    window.__absp218UpdateGuarded = true;
-    const oldUpdate218 = absp217UpdateMount;
-    absp217UpdateMount = function(mount, intel, id){
-      if(absp218IsHomeOrChatArea(mount)) return;
-      if(!/profiles\.php/i.test(location.href) && !id) return;
-      return oldUpdate218(mount, intel, id);
-    };
-  }
-
-  // Guard older attach too, so old painters cannot create chat/header badges.
-  if(typeof attach === 'function' && !window.__absp218AttachGuarded){
-    window.__absp218AttachGuarded = true;
-    const oldAttach218 = attach;
-    attach = function(mount, intel){
-      if(absp218IsHomeOrChatArea(mount)) return;
-
-      // On home/chat pages, do not attach anywhere.
-      if(!absp218AllowedPageForGlobalHonor() && !/factions\.php/i.test(location.href)) return;
-
-      return oldAttach218(mount, intel);
-    };
-  }
-
-  function absp218Schedule(delay=500){
-    clearTimeout(window.__absp218Timer);
-    window.__absp218Timer = setTimeout(()=>absp218RemoveBadBadges(), delay);
-  }
-
-  if(!window.__absp218Started){
-    window.__absp218Started = true;
-
-    [300, 1000, 2500, 5000].forEach(t=>setTimeout(()=>absp218RemoveBadBadges(), t));
-
-    try{
-      const obs = new MutationObserver(()=>absp218Schedule(650));
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
-
-    let last = location.href;
-    setInterval(()=>{
-      if(location.href !== last){
-        last = location.href;
-        setTimeout(absp218RemoveBadBadges, 700);
-      }
-    }, 1800);
-  }
-
-  absp218RemoveBadBadges();
-
-
-
-  /* v2.1.9 Stable faction chat badges + smoother cleanup
-     Keeps:
-     - Faction chat badges on real chat user names.
-     - Faction/war, hospital, jail, travel, and profile honor badges.
-     Fixes:
-     - No empty/orphan badge by the Faction title.
-     - No blinking from removing/recreating badges.
-     - Chat badges require a real nearby profile/player ID.
-  */
-
-  function absp219ExtractIdNear(el){
-    if(!el || typeof extractId !== 'function') return null;
+  function idNear(el){
+    if(!el) return null;
 
     const links = [
       ...(el.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
@@ -3362,121 +457,93 @@
     return null;
   }
 
-  function absp219IsChatContainer(el){
+  function isChat(el){
     let node = el;
     for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
       const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
-      const text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      const t = txt(node);
       if(/chat|message|msg|conversation/.test(ident)) return true;
-      if(/Type your message here/.test(text)) return true;
-      if(/^Faction\s+.+Type your message here/i.test(text)) return true;
+      if(/Type your message here/.test(t)) return true;
+      if(/^Faction\s+.+Type your message here/i.test(t)) return true;
     }
     return false;
   }
 
-  function absp219IsFactionChatName(el){
-    if(!el || !absp219IsChatContainer(el)) return false;
-
-    const id = absp219ExtractIdNear(el);
+  function chatName(raw){
+    if(!raw || !isChat(raw)) return false;
+    const id = idNear(raw);
     if(!id) return false;
-
-    const r = el.getBoundingClientRect?.();
-    if(!r || r.width < 28 || r.width > 260 || r.height < 10 || r.height > 60) return false;
-    if(r.bottom < -80 || r.top > window.innerHeight + 650) return false;
-
-    const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-
-    if(!text || text.length > 90) return false;
-    if(/Type your message here|Faction$|Home|Messages|Events/i.test(text)) return false;
-
-    const hasProfileLink =
-      el.matches?.('a[href*="profiles.php"],a[href*="XID="]') ||
-      !!el.querySelector?.('a[href*="profiles.php"],a[href*="XID="]') ||
-      !!el.closest?.('a[href*="profiles.php"],a[href*="XID="]');
-
-    return hasProfileLink || !!id;
+    const r = raw.getBoundingClientRect?.();
+    if(!r || r.width < 28 || r.width > 280 || r.height < 10 || r.height > 70) return false;
+    if(r.bottom < -80 || r.top > innerHeight + 650) return false;
+    const t = txt(raw);
+    if(!t || t.length > 100) return false;
+    if(/Type your message here|Faction$|Home|Messages|Events/i.test(t)) return false;
+    return true;
   }
 
-  function absp219ChatMount(raw){
-    if(!raw) return null;
-
+  function chatMount(raw){
     let mount = raw.closest?.('a[href*="profiles.php"],a[href*="XID="]') || raw;
     const p = mount.parentElement;
-
     if(p){
       const pr = p.getBoundingClientRect?.();
-      const mr = mount.getBoundingClientRect?.();
-      const pt = (p.textContent || '').replace(/\s+/g, ' ').trim();
-      if(pr && mr && pr.width <= 280 && pr.height <= 70 && pt.length <= 110 && !/Type your message here/i.test(pt)){
+      const pt = txt(p);
+      if(pr && pr.width <= 300 && pr.height <= 80 && pt.length <= 130 && !/Type your message here/i.test(pt)){
         mount = p;
       }
     }
-
     return mount;
   }
 
-  function absp219KnownIntel(id){
-    if(!id) return null;
-    try{
-      if(typeof getIntel === 'function'){
-        const cached = getIntel(id);
-        if(cached) return cached;
+  function honorPlate(raw){
+    if(!raw || raw.closest?.('#absp-panel,.absp-pop')) return null;
+    if(isChat(raw)) return null;
+
+    let best = raw;
+    let node = raw.parentElement;
+
+    for(let i=0; i<3 && node && node !== document.body; i++, node=node.parentElement){
+      const r = node.getBoundingClientRect?.();
+      const t = txt(node);
+      if(!r || r.width < 70 || r.width > 380 || r.height < 10 || r.height > 110) continue;
+      if(badText(t) && t.length < 90) continue;
+      if(node.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]')){
+        best = node;
       }
-    }catch(e){}
-    try{
-      if(typeof bspIntel === 'function'){
-        const bsp = bspIntel(id);
-        if(bsp) return bsp;
-      }
-    }catch(e){}
-    try{
-      if(typeof bsfGetBspCacheIntel === 'function'){
-        const bsp2 = bsfGetBspCacheIntel(id);
-        if(bsp2) return bsp2;
-      }
-    }catch(e){}
+    }
+
+    const r = best.getBoundingClientRect?.();
+    if(!r || r.width < 70 || r.width > 380 || r.height < 10 || r.height > 110) return null;
+    if(r.bottom < -120 || r.top > innerHeight + 800) return null;
+    if(badText(txt(best)) && txt(best).length < 90) return null;
+
+    return best;
+  }
+
+  function rowFor(el){
+    let node = el;
+    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
+      const r = node.getBoundingClientRect?.();
+      if(!r || r.width < 180 || r.height < 18) continue;
+      const id = idNear(node);
+      if(!id) continue;
+      const t = txt(node);
+      if(badText(t)) continue;
+      return node;
+    }
     return null;
   }
 
-  function absp219UpdateBadgeInPlace(mount, intel, id, kind){
-    if(!mount || !id) return;
-
-    let b = mount.querySelector(':scope > .ebsf2-badge');
-    if(!b){
-      b = document.createElement('span');
-      b.className = 'ebsf2-badge';
-      const cs = getComputedStyle(mount);
-      if(cs.position === 'static') mount.style.position = 'relative';
-      mount.appendChild(b);
-    }
-
-    [...mount.querySelectorAll(':scope > .ebsf2-badge')].slice(1).forEach(x=>x.remove());
-
-    if(typeof updateBadge === 'function') updateBadge(b, intel);
-    else b.textContent = intel?.total ? String(intel.total) : 'N/A';
-
-    b.dataset.targetId = String(id);
-    b.dataset.absp219 = kind || 'badge';
-    b.style.pointerEvents = 'auto';
-    b.style.cursor = 'pointer';
+  function leftSide(mount, row){
+    const mr = mount?.getBoundingClientRect?.();
+    const rr = row?.getBoundingClientRect?.();
+    if(!mr || !rr) return true;
+    return mr.left <= rr.left + rr.width * 0.62;
   }
 
-  async function absp219FetchLater(id, mount, kind){
-    if(!id || !app?.key || !mount) return;
-    try{
-      if(typeof req === 'function'){
-        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
-        if(r?.ok && r.player){
-          if(typeof saveIntel === 'function') saveIntel(id, r.player);
-          absp219UpdateBadgeInPlace(mount, r.player, id, kind);
-        }
-      }
-    }catch(e){}
-  }
-
-  async function absp219PaintFactionChatBadges(){
-    const text = (document.body?.innerText || '').slice(0, 5000);
-    if(!/Type your message here|Faction/i.test(text)) return;
+  async function paintChat(){
+    const body = (document.body?.innerText || '').slice(0, 6000);
+    if(!/Type your message here|Faction/i.test(body)) return;
 
     const candidates = [
       ...document.querySelectorAll('a[href*="profiles.php"],a[href*="XID="],[onclick*="profiles.php"],[data-userid],[data-user]')
@@ -3487,117 +554,208 @@
 
     for(const raw of candidates){
       if(painted >= 60) break;
-      if(!absp219IsFactionChatName(raw)) continue;
+      if(!chatName(raw)) continue;
 
-      const id = absp219ExtractIdNear(raw);
+      const id = idNear(raw);
       if(!id || seen.has(id)) continue;
 
-      const mount = absp219ChatMount(raw);
+      const mount = chatMount(raw);
       if(!mount) continue;
 
-      const intel = absp219KnownIntel(id);
-      absp219UpdateBadgeInPlace(mount, intel, id, 'chat');
+      const intel = intelForId(id);
+      updateMount(mount, intel, id, 'chat');
       seen.add(id);
       painted++;
 
-      if(!intel) absp219FetchLater(id, mount, 'chat');
+      if(!intel) fetchIntel(id, mount);
     }
   }
 
-  function absp219IsOrphanHeaderBadge(b){
-    const mount = b?.parentElement;
-    if(!mount) return true;
+  async function paintHonors(){
+    const body = (document.body?.innerText || '').slice(0, 9000);
+    const allowed = /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
+      /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(body);
 
-    const text = (mount.textContent || mount.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+    if(!allowed) return;
 
-    if(!b.dataset.targetId) return true;
-    if(/^Faction\s*N\/A?$/i.test(text)) return true;
-    if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Members\s+Score|Status\s+Attack/i.test(text)) return true;
+    const candidates = [
+      ...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]')
+    ];
 
-    return false;
+    const seen = new Set();
+    let painted = 0;
+
+    for(const raw of candidates){
+      if(painted >= 100) break;
+      if(isChat(raw)) continue;
+
+      const mount = honorPlate(raw);
+      if(!mount) continue;
+
+      let id = idNear(mount) || idNear(raw);
+      if(!id && isProfilePage()) id = extractId(location.href) || extractId(document.body?.innerHTML || '');
+      if(!id) continue;
+
+      const row = rowFor(mount);
+      if(row && !leftSide(mount, row)) continue;
+
+      const key = id + ':' + Math.round(mount.getBoundingClientRect().top);
+      if(seen.has(key)) continue;
+      seen.add(key);
+
+      let intel = intelForId(id);
+      if(!intel && isProfilePage()) intel = visibleIntel();
+      if(intel) saveIntel(id, intel);
+
+      updateMount(mount, intel, id, 'honor');
+      painted++;
+
+      if(!intel) fetchIntel(id, mount);
+    }
   }
 
-  function absp219CleanOnlyBadStuff(){
-    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
-      if(b.closest?.('.ebsf2-pop')) return;
+  function clean(){
+    // Hide/remove legacy visible mess in case old installs are still active.
+    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop').forEach(x => {
+      x.style.display = 'none';
+      x.style.visibility = 'hidden';
+      x.style.pointerEvents = 'none';
+    });
 
-      if(absp219IsOrphanHeaderBadge(b)){
+    document.querySelectorAll('.absp-badge').forEach(b => {
+      if(b.closest?.('.absp-pop')) return;
+      const mount = b.parentElement;
+      const id = b.dataset.targetId;
+      if(!mount || !id){
         b.remove();
         return;
       }
 
-      const mount = b.parentElement;
-      const kind = b.dataset.absp219 || '';
+      const t = txt(mount) + ' ' + txt(mount.parentElement);
+      if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Members\s+Score|Status\s+Attack/i.test(t)){
+        b.remove();
+        return;
+      }
 
-      if(kind === 'chat'){
-        if(!b.dataset.targetId || !absp219IsChatContainer(mount)){
-          b.remove();
-        }
+      if(b.dataset.kind === 'chat' && !isChat(mount)){
+        b.remove();
+      }
+
+      if(b.dataset.kind === 'honor' && isChat(mount)){
+        b.remove();
       }
     });
+
+    updateIcon();
   }
 
-  if(typeof absp218IsHomeOrChatArea === 'function'){
-    absp218IsHomeOrChatArea = function(el){
-      if(absp219IsFactionChatName(el)) return false;
-
-      let node = el;
-      for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
-        const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
-        const nt = (node.textContent || '').replace(/\s+/g, ' ').trim();
-        if(/chat|message|msg|conversation|dialog|popup|modal/.test(ident) && !absp219ExtractIdNear(node)) return true;
-        if(/Type your message here|Faction\s*$/.test(nt) && nt.length < 2000 && !absp219ExtractIdNear(node)) return true;
-      }
-      return false;
-    };
+  async function paint(){
+    updateIcon();
+    await paintHonors();
+    await paintChat();
+    clean();
   }
 
-  async function absp219PaintAll(){
+  function schedulePaint(ms = 700){
+    clearTimeout(window.__abspTimer);
+    window.__abspTimer = setTimeout(paint, ms);
+  }
+
+  function tag(v, type='value'){
+    let color = 'grey';
+    if(type === 'conf'){
+      const n = Number(v || 0);
+      color = confColor(n);
+      v = Math.max(0, Math.min(100, Math.round(n))) + '%';
+    } else {
+      const l = String(v || 'Unknown').toLowerCase();
+      if(l.includes('avoid') || l.includes('high') || l.includes('heavy')) color = 'red';
+      else if(l.includes('difficult')) color = 'orange';
+      else if(l.includes('fair') || l.includes('equal')) color = 'yellow';
+      else if(l.includes('easy')) color = 'green';
+      else if(l.includes('low') || l.includes('light')) color = 'blue';
+    }
+    return `<span class="absp-tag absp-${color}">${esc(v || 'Unknown')}</span>`;
+  }
+
+  function popup(b){
+    document.querySelectorAll('.absp-pop').forEach(x => x.remove());
+    const id = b.dataset.targetId;
+    const intel = (id && getIntel(id)) || (id && bspIntel(id)) || {total:parseNum(b.textContent), confidence:0, source:'badge'};
+    const total = Number(intel?.best_total || intel?.total || 0);
+    const conf = riskConfidence(intel);
+    const d = diff(total, intel?.label);
+
+    const pop = document.createElement('div');
+    pop.className = 'absp-pop';
+    pop.innerHTML = `
+      <div class="absp-pop-head"><b>⚔️ Battle Intel</b><button class="close">×</button></div>
+      <div class="absp-pop-body">
+        <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} ${tag(total ? d : 'Unknown')}</div>
+        <div><b>Source:</b> ${esc(intel?.source || 'none')}</div>
+        <div><b>Confidence:</b> ${tag(conf, 'conf')}</div>
+        ${total && app.total && total / app.total >= 2.5 ? `<div style="margin-top:7px;padding:6px;border-radius:8px;background:#431407;color:#fdba74;border:1px solid #f97316;font-weight:900">Confidence reduced: high stat gap</div>` : ''}
+        <hr>
+        <div class="absp-grid">
+          <div><b>STR</b>${tag('Unknown')}</div>
+          <div><b>DEF</b>${tag('Unknown')}</div>
+          <div><b>SPD</b>${tag('Unknown')}</div>
+          <div><b>DEX</b>${tag('Unknown')}</div>
+          <div><b>Armor</b>${tag('Unknown')}</div>
+          <div><b>Temp</b>${tag('Unknown')}</div>
+        </div>
+      </div>`;
+    document.body.appendChild(pop);
+
+    const r = b.getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(innerWidth - 265, r.left)) + 'px';
+    pop.style.top = Math.max(78, Math.min(innerHeight - 280, r.bottom + 6)) + 'px';
+    pop.querySelector('.close').onclick = e => { e.stopPropagation(); pop.remove(); schedulePaint(150); };
+  }
+
+  document.addEventListener('click', e => {
+    const b = e.target.closest?.('.absp-badge');
+    if(!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    popup(b);
+  }, true);
+
+  function isAttackClick(el){
+    if(!el) return false;
+    const blob = [el.href, el.getAttribute?.('href'), el.getAttribute?.('onclick'), el.textContent, el.getAttribute?.('title')].filter(Boolean).join(' ');
+    return /sid=attack|user2ID|attack|fight/i.test(blob);
+  }
+
+  document.addEventListener('click', e => {
+    const el = e.target.closest?.('a,button,[onclick]');
+    if(!isAttackClick(el)) return;
+    const id = idNear(el);
+    if(id) GM_setValue('absp_last_attack_target', JSON.stringify({id, ts:Date.now()}));
+  }, true);
+
+  function boot(){
+    initUI();
+    updateIcon();
+    clean();
+
+    [600, 1600, 3500, 6500].forEach(t => setTimeout(() => schedulePaint(50), t));
+
     try{
-      if(typeof absp217PaintGlobalHonorBars === 'function') await absp217PaintGlobalHonorBars();
-    }catch(e){}
-    try{
-      if(typeof absp216PaintFactionBadges === 'function') await absp216PaintFactionBadges();
-    }catch(e){}
-    await absp219PaintFactionChatBadges();
-    absp219CleanOnlyBadStuff();
-  }
-
-  function absp219Schedule(delay=650){
-    clearTimeout(window.__absp219Timer);
-    window.__absp219Timer = setTimeout(()=>absp219PaintAll(), delay);
-  }
-
-  const absp219OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
-  if(absp219OldPaintAll && !window.__absp219PaintWrapped){
-    window.__absp219PaintWrapped = true;
-    paintAll = async function(force){
-      let out;
-      try{ out = await absp219OldPaintAll(force); }catch(e){}
-      await absp219PaintAll();
-      return out;
-    };
-  }
-
-  if(!window.__absp219Started){
-    window.__absp219Started = true;
-
-    [500, 1500, 3500, 6500].forEach(t=>setTimeout(()=>absp219Schedule(80), t));
-
-    try{
-      const obs = new MutationObserver(()=>absp219Schedule(850));
+      const obs = new MutationObserver(() => schedulePaint(900));
       obs.observe(document.body, {childList:true, subtree:true});
-    }catch(e){}
+    }catch {}
 
     let last = location.href;
-    setInterval(()=>{
+    setInterval(() => {
       if(location.href !== last){
         last = location.href;
-        absp219Schedule(700);
+        schedulePaint(700);
+      } else {
+        clean();
       }
-    }, 2000);
+    }, 2500);
   }
 
-  absp219Schedule(250);
-
+  boot();
 })();
