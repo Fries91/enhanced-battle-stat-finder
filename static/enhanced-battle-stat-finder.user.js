@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder v2
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.0.5
-// @description  Stable PDA battle stat badges with silent learning, clickable colored intel popup, and profile-page-only main icon.
+// @version      2.0.6
+// @description  Stable PDA battle stat badges with clean profile-only info/login panel, silent learning, and clickable intel popup.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -908,5 +908,104 @@
   setTimeout(ebsf205ForceIconVisibility, 500);
   setTimeout(ebsf205ForceIconVisibility, 1500);
   setInterval(ebsf205ForceIconVisibility, 1000);
+
+
+
+  /* v2.0.6 Clean main icon panel:
+     Only Rules, How It Works, ToS, API Key Use/Storage, then Login at bottom.
+  */
+
+  function ebsf206RenderCleanPanel(){
+    const panel = document.getElementById('ebsf2-panel');
+    if(!panel) return;
+
+    panel.className = app.open ? 'open' : '';
+    panel.innerHTML = `
+      <h2>⚔️ Battle Stat Finder <button style="float:right" id="ebsf2-close">Close</button></h2>
+      <div class="body">
+        <div class="box">
+          <b>📜 Rules</b><br>
+          <ul style="margin:8px 0 0 18px;padding:0;line-height:1.45">
+            <li>Use this as a prediction helper, not a guaranteed outcome.</li>
+            <li>Do not share another player’s private spy/manual data unless you are allowed to.</li>
+            <li>Predictions need time to learn and improve.</li>
+            <li>Respect Torn’s rules, API limits, and fair-use expectations.</li>
+          </ul>
+        </div>
+
+        <div class="box">
+          <b>⚔️ How It Works</b><br>
+          <p style="margin:8px 0 0;line-height:1.45">
+            The app shows a small stat badge on player honor bars. Tap the badge to see the intel popup.
+            It can use visible FF/BSP estimates when readable, stored backend intel, and quiet fight-learning signals.
+            New targets may show <b>N/A</b> until enough information is available.
+          </p>
+          <p style="margin:8px 0 0;line-height:1.45">
+            The app improves over time as more users fight, scan, and gather estimates. One fight gives a rough signal;
+            multiple fights and stronger sources make predictions better.
+          </p>
+        </div>
+
+        <div class="box">
+          <b>✅ Terms of Service</b><br>
+          <p style="margin:8px 0 0;line-height:1.45">
+            By using this tool, you understand that all numbers are estimates and may be wrong.
+            You are responsible for your own attacks, choices, and risk. The app does not guarantee wins,
+            respect gains, or exact enemy stats.
+          </p>
+          <p style="margin:8px 0 0;line-height:1.45">
+            This tool is intended to organize information already visible to you, information you provide,
+            or estimates collected through allowed API/visible-page use.
+          </p>
+        </div>
+
+        <div class="box">
+          <b>🔑 API Key Use & Storage</b><br>
+          <p style="margin:8px 0 0;line-height:1.45">
+            Use a <b>limited Torn API key</b>. Your key is saved locally in your browser/PDA userscript storage so the
+            script can log you in and detect your own battle stats for comparison.
+          </p>
+          <p style="margin:8px 0 0;line-height:1.45">
+            The backend uses your key only when needed for login/stat detection or optional estimate lookups.
+            No Torn password is ever requested. The app is designed around limited-key use and avoids asking for
+            unnecessary access.
+          </p>
+          <p style="margin:8px 0 0;line-height:1.45">
+            To stay aligned with Torn’s API rules, the script should not spam requests, should respect rate limits,
+            and should only use data the user is allowed to access.
+          </p>
+        </div>
+
+        <div class="box">
+          <b>Login</b><br>
+          <input id="ebsf2-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
+          <label style="display:block;margin:8px 0">
+            <input id="ebsf2-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto">
+            Use FF Scouter base intel when available
+          </label>
+          <button id="ebsf2-login">Login / Save</button>
+          <button id="ebsf2-repaint">Repaint badges</button>
+          <div style="margin-top:8px;color:#cbd5e1">
+            Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}
+          </div>
+        </div>
+      </div>
+    `;
+
+    const close = panel.querySelector('#ebsf2-close');
+    if(close) close.onclick = ()=>{ app.open=false; render(); };
+
+    const loginBtn = panel.querySelector('#ebsf2-login');
+    if(loginBtn) loginBtn.onclick = login;
+
+    const repaintBtn = panel.querySelector('#ebsf2-repaint');
+    if(repaintBtn) repaintBtn.onclick = ()=>paintAll?.(true);
+
+    ebsf205ForceIconVisibility?.();
+  }
+
+  render = ebsf206RenderCleanPanel;
+
+  setTimeout(()=>render?.(), 250);
 
 })();
