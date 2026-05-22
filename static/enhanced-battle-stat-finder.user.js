@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder v2
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.0.2
-// @description  Stable PDA battle stat badges with clickable intel popup, FF/BSP info bridge, profile-only app icon, and fight learning.
+// @version      2.0.3
+// @description  Stable PDA battle stat badges with clickable colored intel popup, FF/BSP info bridge, profile-only app icon, and fight learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -56,6 +56,14 @@
     .ebsf2-shape{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}
     .ebsf2-shape div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
     .ebsf2-note{color:#94a3b8;font-size:11px;margin:8px 0 0}
+
+    .ebsf2-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}
+    .ebsf2-tag-red{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
+    .ebsf2-tag-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
+    .ebsf2-tag-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
+    .ebsf2-tag-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
+    .ebsf2-conf{display:inline-flex;align-items:center;justify-content:center;margin-left:5px;padding:2px 7px;border-radius:999px;font-weight:900;border:1px solid #64748b}
+
 
   `);
 
@@ -656,5 +664,101 @@
   ebsf202InstallBadgeClick();
   ebsf202UpdateMainIconVisibility();
   setInterval(ebsf202UpdateMainIconVisibility, 1500);
+
+
+
+  /* v2.0.3 colored popup chips */
+
+  function ebsf203ClassForValue(v){
+    v = String(v || 'Unknown').toLowerCase();
+    if(v.includes('high') || v.includes('heavy')) return 'ebsf2-tag-red';
+    if(v.includes('equal')) return 'ebsf2-tag-green';
+    if(v.includes('low') || v.includes('light')) return 'ebsf2-tag-blue';
+    return 'ebsf2-tag-grey';
+  }
+
+  function ebsf203ClassForConfidence(conf){
+    conf = Number(conf || 0);
+    if(conf >= 70) return 'ebsf2-tag-green';
+    if(conf >= 45) return 'ebsf2-tag-blue';
+    return 'ebsf2-tag-red';
+  }
+
+  function ebsf203Tag(v){
+    const val = v || 'Unknown';
+    return `<span class="ebsf2-tag ${ebsf203ClassForValue(val)}">${esc(val)}</span>`;
+  }
+
+  function ebsf203Conf(conf){
+    const c = Math.round(Number(conf || 0));
+    return `<span class="ebsf2-conf ${ebsf203ClassForConfidence(c)}">${c}%</span>`;
+  }
+
+  function ebsf203RelationTag(total){
+    const rel = ebsf202Relation ? ebsf202Relation(total) : 'Unknown';
+    return ebsf203Tag(rel);
+  }
+
+  // Override popup with colored High/Equal/Low/Unknown and confidence colors.
+  if(typeof ebsf202MakePopup === 'function'){
+    ebsf202MakePopup = function(targetId, intel, anchor){
+      document.querySelectorAll('.ebsf2-pop').forEach(x=>x.remove());
+
+      const ff = ebsf202ParseFFVisibleInfo ? ebsf202ParseFFVisibleInfo() : {};
+      const total = Number(intel?.best_total || intel?.total || 0);
+      const shape = ebsf202ShapeFromIntel ? ebsf202ShapeFromIntel(intel || {}) : {STR:'Unknown',DEF:'Unknown',SPD:'Unknown',DEX:'Unknown'};
+      const source = intel?.source || 'none';
+      const conf = Number(intel?.confidence || 0);
+
+      const armor = intel?.armor_signal || intel?.armor || 'Unknown';
+      const temp = intel?.temp_seen || intel?.temp || 'Unknown';
+
+      const pop = document.createElement('div');
+      pop.className = 'ebsf2-pop';
+      pop.innerHTML = `
+        <div class="ebsf2-pop-head">
+          <b>⚔️ Battle Intel</b>
+          <button class="ebsf2-pop-close">×</button>
+        </div>
+        <div class="ebsf2-pop-body">
+          <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} ${ebsf203RelationTag(total)}</div>
+          <div><b>Source:</b> ${esc(source)}</div>
+          <div><b>Confidence:</b> ${ebsf203Conf(conf)}</div>
+          ${ff.fair_fight ? `<div><b>FF:</b> ${esc(ff.fair_fight)}</div>` : ''}
+          ${ff.estimated_stats ? `<div><b>FF Est:</b> ${esc(ff.estimated_stats)}</div>` : ''}
+          <hr>
+          <div class="ebsf2-shape">
+            <div><b>STR</b>${ebsf203Tag(shape.STR)}</div>
+            <div><b>DEF</b>${ebsf203Tag(shape.DEF)}</div>
+            <div><b>SPD</b>${ebsf203Tag(shape.SPD)}</div>
+            <div><b>DEX</b>${ebsf203Tag(shape.DEX)}</div>
+            <div><b>Armor</b>${ebsf203Tag(armor)}</div>
+            <div><b>Temp</b>${ebsf203Tag(temp)}</div>
+          </div>
+          <p class="ebsf2-note">Colors: High/Heavy red, Equal green, Low/Light blue, Unknown grey. Confidence: high green, mid blue, low red.</p>
+        </div>
+      `;
+
+      document.body.appendChild(pop);
+      const r = anchor?.getBoundingClientRect?.();
+      if(r){
+        pop.style.left = Math.max(8, Math.min(window.innerWidth - 270, r.left)) + 'px';
+        pop.style.top = Math.max(80, Math.min(window.innerHeight - 270, r.bottom + 6)) + 'px';
+      } else {
+        pop.style.left = '12px';
+        pop.style.top = '120px';
+      }
+
+      pop.querySelector('.ebsf2-pop-close').onclick = ()=>pop.remove();
+      setTimeout(()=>{
+        document.addEventListener('click', function closer(e){
+          if(!pop.contains(e.target) && !e.target.closest('.ebsf2-badge')){
+            pop.remove();
+            document.removeEventListener('click', closer, true);
+          }
+        }, true);
+      }, 100);
+    };
+  }
 
 })();
