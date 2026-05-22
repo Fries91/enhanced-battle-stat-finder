@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.1.5
-// @description  Full-feature balanced PDA build with risk-adjusted confidence, restored faction row badges, colored popup, and smoother repainting.
+// @version      2.1.7
+// @description  Full-feature balanced PDA build with global honor-bar support for faction, hospital, jail, travel, profiles, colored popup, and smoother repainting.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -2604,5 +2604,563 @@
       return absp215OldSaveIntel(id, intel);
     };
   }
+
+
+
+  /* v2.1.6 Locked honor badge engine
+     Fixes:
+     - Stops badge blinking caused by alternating mount points.
+     - Requires a real player ID for faction/war row badges.
+     - Blocks war headers/team headers/score/status/attack columns.
+     - Updates existing badge in place instead of removing/recreating it.
+  */
+
+  function absp216PageIsFactionLike(){
+    const text = (document.body?.innerText || '').slice(0, 9000);
+    return /factions\.php/i.test(location.href) ||
+           /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain|Okay\s+Attack/i.test(text);
+  }
+
+  function absp216BadAreaText(text){
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    return !text ||
+      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
+      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
+      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:/i.test(text) ||
+      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
+  }
+
+  function absp216ExtractPlayerIdFromRow(row){
+    if(!row || typeof extractId !== 'function') return null;
+    const links = [...(row.querySelectorAll?.('a[href*="profiles.php"], a[href*="loader.php"], a[href*="sid=attack"]') || [])];
+    for(const a of links){
+      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
+      if(id) return Number(id);
+    }
+    const id2 = extractId(row.innerHTML || '');
+    return id2 ? Number(id2) : null;
+  }
+
+  function absp216RowLooksPlayer(row){
+    if(!row) return false;
+    const r = row.getBoundingClientRect?.();
+    if(!r || r.width < 220 || r.height < 22 || r.bottom < -120 || r.top > window.innerHeight + 900) return false;
+
+    const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
+    if(absp216BadAreaText(text)) return false;
+
+    // Must have a real target/player id. This kills header/team N/A badges.
+    const id = absp216ExtractPlayerIdFromRow(row);
+    if(!id) return false;
+
+    // Must look like a member line, not a war status panel.
+    const hasActionStatus = /\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text);
+    const hasHonorThing = !!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
+
+    return hasActionStatus && hasHonorThing;
+  }
+
+  function absp216StablePlate(row){
+    if(!absp216RowLooksPlayer(row)) return null;
+
+    const rr = row.getBoundingClientRect?.();
+    if(!rr) return null;
+
+    // Search only the left side of the row.
+    const leftLimit = rr.left + rr.width * 0.58;
+    const candidates = [...row.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]')];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const el of candidates){
+      if(el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) continue;
+
+      const r = el.getBoundingClientRect?.();
+      if(!r) continue;
+      if(r.left > leftLimit) continue;
+      if(r.width < 45 || r.width > 300 || r.height < 10 || r.height > 85) continue;
+
+      const localText = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+      if(/Score|Status|Attack|Okay|Members/i.test(localText) && localText.length < 55) continue;
+
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute('style') || '').toLowerCase();
+
+      let score = 0;
+      if(cls.includes('honor')) score += 60;
+      if(cls.includes('name')) score += 35;
+      if(st.includes('background-image')) score += 35;
+      if(el.tagName === 'IMG') score += 15;
+      if(el.href && /profiles\.php/i.test(el.href)) score += 25;
+      score += Math.min(35, r.width / 8);
+
+      if(score > bestScore){
+        bestScore = score;
+        best = el;
+      }
+    }
+
+    if(!best) return null;
+
+    // Use one stable mount: parent if parent is still small and left-side, otherwise the element.
+    const p = best.parentElement || best;
+    const pr = p.getBoundingClientRect?.();
+
+    if(pr && pr.left <= leftLimit && pr.width >= 55 && pr.width <= 330 && pr.height >= 12 && pr.height <= 100){
+      return p;
+    }
+    return best;
+  }
+
+  function absp216CurrentIntelForId(id){
+    if(!id) return null;
+    try{
+      if(typeof getIntel === 'function'){
+        const cached = getIntel(id);
+        if(cached) return cached;
+      }
+    }catch(e){}
+    try{
+      if(typeof bspIntel === 'function'){
+        const bsp = bspIntel(id);
+        if(bsp) return bsp;
+      }
+    }catch(e){}
+    try{
+      if(typeof bsfGetBspCacheIntel === 'function'){
+        const bsp2 = bsfGetBspCacheIntel(id);
+        if(bsp2) return bsp2;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function absp216BadgeUpdate(mount, intel, id){
+    if(!mount || !id) return;
+
+    // Remove duplicate badges inside the same mount, keep one.
+    const existing = [...mount.querySelectorAll(':scope > .ebsf2-badge')];
+    let badge = existing[0];
+
+    for(const extra of existing.slice(1)) extra.remove();
+
+    if(!badge){
+      badge = document.createElement('span');
+      badge.className = 'ebsf2-badge';
+      const cs = getComputedStyle(mount);
+      if(cs.position === 'static') mount.style.position = 'relative';
+      mount.appendChild(badge);
+    }
+
+    // Never recreate if it already exists; just update text/color.
+    if(typeof updateBadge === 'function') updateBadge(badge, intel);
+    else {
+      badge.textContent = intel?.total ? String(intel.total) : 'N/A';
+    }
+
+    badge.dataset.targetId = String(id);
+    badge.dataset.absp216 = '1';
+    badge.style.pointerEvents = 'auto';
+    badge.style.cursor = 'pointer';
+  }
+
+  async function absp216FetchLater(id, mount){
+    if(!id || !app?.key || !mount) return;
+    try{
+      if(typeof req === 'function'){
+        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
+        if(r?.ok && r.player){
+          if(typeof saveIntel === 'function') saveIntel(id, r.player);
+          absp216BadgeUpdate(mount, r.player, id);
+        }
+      }
+    }catch(e){}
+  }
+
+  async function absp216PaintFactionBadges(){
+    if(!absp216PageIsFactionLike()) return;
+
+    const rows = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"],div')]
+      .filter(absp216RowLooksPlayer)
+      .slice(0, 90);
+
+    const paintedIds = new Set();
+
+    for(const row of rows){
+      const id = absp216ExtractPlayerIdFromRow(row);
+      if(!id || paintedIds.has(id)) continue;
+
+      const mount = absp216StablePlate(row);
+      if(!mount) continue;
+
+      const intel = absp216CurrentIntelForId(id);
+      absp216BadgeUpdate(mount, intel, id);
+      paintedIds.add(id);
+
+      if(!intel) absp216FetchLater(id, mount);
+    }
+
+    absp216CleanBadges();
+  }
+
+  function absp216CleanBadges(){
+    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
+      if(b.closest?.('.ebsf2-pop')) return;
+
+      const id = b.dataset.targetId;
+      const mount = b.parentElement;
+
+      // Faction-like pages require a real player id and valid member-row mount.
+      if(absp216PageIsFactionLike()){
+        let row = mount;
+        let valid = false;
+
+        for(let i=0; i<8 && row && row !== document.body; i++, row=row.parentElement){
+          if(absp216RowLooksPlayer(row)){
+            const rowId = absp216ExtractPlayerIdFromRow(row);
+            const stable = absp216StablePlate(row);
+            valid = !!(rowId && String(rowId) === String(id) && stable === mount);
+            break;
+          }
+        }
+
+        if(!valid) b.remove();
+      }
+    });
+  }
+
+  // Hard-guard attach so old painter calls cannot place badges on headers/attack/status columns.
+  if(typeof attach === 'function' && !window.__absp216AttachGuarded){
+    window.__absp216AttachGuarded = true;
+    const oldAttach216 = attach;
+    attach = function(mount, intel){
+      if(absp216PageIsFactionLike()){
+        let row = mount;
+        let found = null;
+        for(let i=0; i<8 && row && row !== document.body; i++, row=row.parentElement){
+          if(absp216RowLooksPlayer(row)){ found = row; break; }
+        }
+        if(!found) return;
+
+        const id = absp216ExtractPlayerIdFromRow(found);
+        const stable = absp216StablePlate(found);
+
+        if(!id || stable !== mount) return;
+        absp216BadgeUpdate(mount, intel, id);
+        return;
+      }
+
+      oldAttach216(mount, intel);
+    };
+  }
+
+  // Replace all prior faction painters.
+  if(typeof absp214PaintVisiblePlates === 'function') absp214PaintVisiblePlates = absp216PaintFactionBadges;
+  if(typeof absp213PaintFactionRows === 'function') absp213PaintFactionRows = absp216PaintFactionBadges;
+  if(typeof ebsf211PaintFactionRows === 'function') ebsf211PaintFactionRows = absp216PaintFactionBadges;
+  if(typeof ebsf210PaintFactionRows === 'function') ebsf210PaintFactionRows = absp216PaintFactionBadges;
+  if(typeof ebsf208PaintFactionRows === 'function') ebsf208PaintFactionRows = absp216PaintFactionBadges;
+
+  // One controlled scheduler.
+  function absp216Schedule(delay=650){
+    clearTimeout(window.__absp216Timer);
+    window.__absp216Timer = setTimeout(()=>absp216PaintFactionBadges(), delay);
+  }
+
+  if(!window.__absp216Started){
+    window.__absp216Started = true;
+
+    [450, 1400, 3000].forEach(t=>setTimeout(()=>absp216Schedule(80), t));
+
+    try{
+      const obs = new MutationObserver(()=>absp216Schedule(750));
+      obs.observe(document.body, {childList:true, subtree:true});
+    }catch(e){}
+
+    let last = location.href;
+    setInterval(()=>{
+      if(location.href !== last){
+        last = location.href;
+        absp216Schedule(700);
+      }
+    }, 1800);
+  }
+
+  absp216Schedule(250);
+
+
+
+  /* v2.1.7 Global honor-bar support
+     Fix:
+     - Hospital / jail / travel / other Torn honor bars do not always have faction row text like Okay/Attack.
+     - This adds a lighter global honor painter for visible player honor bars outside faction rows.
+     - Still blocks headers, faction war panels, score boxes, and non-player bars.
+  */
+
+  function absp217IsBadHonorText(text){
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    return !text ||
+      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
+      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
+      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:/i.test(text) ||
+      /Battle Stats|Strength|Defense|Speed|Dexterity|Energy|Happy|Nerve/i.test(text) ||
+      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
+  }
+
+  function absp217PageCanHaveHonorBars(){
+    const text = (document.body?.innerText || '').slice(0, 9000);
+    return /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
+           /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(text);
+  }
+
+  function absp217ExtractIdNear(el){
+    if(!el || typeof extractId !== 'function') return null;
+
+    // Check nearest links first.
+    const nearLinks = [
+      ...(el.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
+      ...(el.parentElement?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || [])
+    ];
+
+    for(const a of nearLinks){
+      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
+      if(id) return Number(id);
+    }
+
+    let node = el;
+    for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
+      const blob = [
+        node.getAttribute?.('href'),
+        node.getAttribute?.('onclick'),
+        node.getAttribute?.('data-user'),
+        node.getAttribute?.('data-userid'),
+        node.getAttribute?.('data-id'),
+        node.innerHTML
+      ].filter(Boolean).join(' ');
+      const id = extractId(blob);
+      if(id) return Number(id);
+    }
+
+    return null;
+  }
+
+  function absp217IsHonorPlate(el){
+    if(!el || el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) return false;
+
+    const r = el.getBoundingClientRect?.();
+    if(!r) return false;
+
+    // Honor bars are usually rectangular and name-like, not huge panels.
+    if(r.width < 70 || r.width > 360 || r.height < 10 || r.height > 95) return false;
+    if(r.bottom < -120 || r.top > window.innerHeight + 800) return false;
+
+    const text = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+    if(absp217IsBadHonorText(text) && text.length < 80) return false;
+
+    const cls = String(el.className || '').toLowerCase();
+    const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+    if(cls.includes('honor') || cls.includes('name')) return true;
+    if(st.includes('background-image')) return true;
+
+    // Image inside a likely honor plate.
+    if(el.tagName === 'IMG'){
+      const p = el.parentElement;
+      const pr = p?.getBoundingClientRect?.();
+      if(pr && pr.width >= 70 && pr.width <= 360 && pr.height >= 10 && pr.height <= 95) return true;
+    }
+
+    if(el.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]')) return true;
+
+    return false;
+  }
+
+  function absp217StableHonorMount(raw){
+    if(!raw) return null;
+
+    // Prefer a compact parent that is the full plate, not just the internal image.
+    let best = raw;
+    let node = raw.parentElement;
+
+    for(let i=0; i<3 && node && node !== document.body; i++, node=node.parentElement){
+      if(absp217IsHonorPlate(node)){
+        const nr = node.getBoundingClientRect?.();
+        const br = best.getBoundingClientRect?.();
+        if(nr && br && nr.width >= br.width && nr.width <= 380 && nr.height <= 105){
+          best = node;
+        }
+      }
+    }
+
+    return absp217IsHonorPlate(best) ? best : null;
+  }
+
+  function absp217LooksLikeHeaderOrWarPanel(mount){
+    const r = mount.getBoundingClientRect?.();
+    if(!r) return true;
+
+    const text = (mount.textContent || mount.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+
+    // Header/war title bars are usually high up, centered/wide, and have no nearby profile id.
+    if(/Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(text)) return true;
+
+    // If no player id nearby, don't paint on list pages. Profile page can still use visible profile ID/title.
+    const id = absp217ExtractIdNear(mount);
+    if(!id && !/profiles\.php/i.test(location.href)) return true;
+
+    return false;
+  }
+
+  function absp217KnownIntel(id){
+    if(!id) return null;
+    try{
+      if(typeof getIntel === 'function'){
+        const cached = getIntel(id);
+        if(cached) return cached;
+      }
+    }catch(e){}
+    try{
+      if(typeof bspIntel === 'function'){
+        const bsp = bspIntel(id);
+        if(bsp) return bsp;
+      }
+    }catch(e){}
+    try{
+      if(typeof bsfGetBspCacheIntel === 'function'){
+        const bsp2 = bsfGetBspCacheIntel(id);
+        if(bsp2) return bsp2;
+      }
+    }catch(e){}
+    return null;
+  }
+
+  function absp217UpdateMount(mount, intel, id){
+    if(!mount) return;
+
+    let b = mount.querySelector(':scope > .ebsf2-badge');
+    if(!b){
+      b = document.createElement('span');
+      b.className = 'ebsf2-badge';
+      const cs = getComputedStyle(mount);
+      if(cs.position === 'static') mount.style.position = 'relative';
+      mount.appendChild(b);
+    }
+
+    if(typeof updateBadge === 'function') updateBadge(b, intel);
+    else b.textContent = intel?.total ? String(intel.total) : 'N/A';
+
+    if(id) b.dataset.targetId = String(id);
+    b.dataset.absp217 = '1';
+    b.style.pointerEvents = 'auto';
+    b.style.cursor = 'pointer';
+  }
+
+  async function absp217FetchIntel(id, mount){
+    if(!id || !app?.key || !mount) return;
+    try{
+      if(typeof req === 'function'){
+        const r = await req('GET', '/api/player/' + id + '/intel?your_total=' + (app.total || 0));
+        if(r?.ok && r.player){
+          if(typeof saveIntel === 'function') saveIntel(id, r.player);
+          absp217UpdateMount(mount, r.player, id);
+        }
+      }
+    }catch(e){}
+  }
+
+  async function absp217PaintGlobalHonorBars(){
+    if(!absp217PageCanHaveHonorBars()) return;
+
+    const rawCandidates = [...document.querySelectorAll(
+      '[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]'
+    )];
+
+    const seen = new Set();
+    let count = 0;
+
+    for(const raw of rawCandidates){
+      if(count >= 100) break;
+
+      const mount = absp217StableHonorMount(raw);
+      if(!mount) continue;
+      if(absp217LooksLikeHeaderOrWarPanel(mount)) continue;
+
+      const mr = mount.getBoundingClientRect?.();
+      const key = mr ? `${Math.round(mr.left)}:${Math.round(mr.top)}:${Math.round(mr.width)}:${Math.round(mr.height)}` : mount.outerHTML.slice(0,80);
+      if(seen.has(key)) continue;
+      seen.add(key);
+
+      const id = absp217ExtractIdNear(mount) || (typeof extractId === 'function' ? extractId(location.href) : null);
+      if(!id && !/profiles\.php/i.test(location.href)) continue;
+
+      let intel = absp217KnownIntel(id);
+
+      // On profile pages, visible FF/BSP text can be used.
+      if(!intel && /profiles\.php/i.test(location.href) && typeof visibleIntel === 'function'){
+        try{ intel = visibleIntel(); }catch(e){}
+      }
+
+      absp217UpdateMount(mount, intel, id);
+      count++;
+
+      if(id && !intel) absp217FetchIntel(id, mount);
+    }
+
+    absp217CleanGlobalBadges();
+  }
+
+  function absp217CleanGlobalBadges(){
+    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
+      if(b.closest?.('.ebsf2-pop')) return;
+
+      const mount = b.parentElement;
+      if(!mount) return;
+
+      if(!absp217PageCanHaveHonorBars()) return;
+
+      if(!absp217IsHonorPlate(mount) || absp217LooksLikeHeaderOrWarPanel(mount)){
+        b.remove();
+      }
+    });
+  }
+
+  // Let the strict faction painter still run, but add global honors after it.
+  const absp217OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
+  if(absp217OldPaintAll && !window.__absp217PaintWrapped){
+    window.__absp217PaintWrapped = true;
+    paintAll = async function(force){
+      let out;
+      try{ out = await absp217OldPaintAll(force); }catch(e){}
+      await absp217PaintGlobalHonorBars();
+      return out;
+    };
+  }
+
+  function absp217Schedule(delay=700){
+    clearTimeout(window.__absp217Timer);
+    window.__absp217Timer = setTimeout(()=>absp217PaintGlobalHonorBars(), delay);
+  }
+
+  if(!window.__absp217Started){
+    window.__absp217Started = true;
+
+    [500, 1500, 3500, 6500].forEach(t=>setTimeout(()=>absp217Schedule(80), t));
+
+    try{
+      const obs = new MutationObserver(()=>absp217Schedule(900));
+      obs.observe(document.body, {childList:true, subtree:true});
+    }catch(e){}
+
+    let last = location.href;
+    setInterval(()=>{
+      if(location.href !== last){
+        last = location.href;
+        absp217Schedule(700);
+      }
+    }, 1800);
+  }
+
+  absp217Schedule(250);
 
 })();
