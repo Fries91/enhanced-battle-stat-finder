@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.0.4
-// @description  Locked honor-bar badge build: badge is mounted inside exact player honor bars so it scrolls with them, no floating overlay drift.
+// @version      3.0.5
+// @description  Name-badge absolute build: badge is a separate page-layer locked over player name/honor strip, not pasted into Torn HTML or tooltips.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -95,7 +95,7 @@
 
     .absp31-badge{
       position:absolute!important;
-      z-index:50!important;
+      z-index:999994!important;
       display:inline-flex!important;
       align-items:center!important;
       justify-content:center!important;
@@ -113,7 +113,7 @@
       overflow:hidden!important;
       pointer-events:auto!important;
       cursor:pointer!important;
-      right:4px!important;top:2px!important;transform:translateZ(0)!important;
+      transform:translateZ(0)!important;
     }
     .absp31-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
     .absp31-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
@@ -962,149 +962,119 @@
   boot();
 
 
-  /* v3.0.4 locked honor-bar mount
+  /* v3.0.5 name-badge absolute overlay
      Fix:
-     - Floating fixed overlay drifted while PDA scrolled.
-     - Badge now mounts directly inside the honor/name strip.
-     - This keeps it locked to the honor bar.
-     - Also rejects FairFight/Est Stats/profile-image false positions.
+     - v3.0.4 inserted badge inside Torn's honor HTML.
+     - Torn copied that badge into hover/profile tooltip cards.
+     - This build keeps badge OUTSIDE Torn HTML and positions it over the player name strip using document coordinates.
+     - It scrolls with page because it uses absolute page position, not fixed viewport position.
   */
 
-  function absp304RejectProfileInfoFalseHit(el){
+  function absp305Text(s){
+    return String(s || '').replace(/\s+/g,' ').trim();
+  }
+
+  function absp305InTornPopup(el){
     let node = el;
-    for(let i=0; i<5 && node && node !== document.body; i++, node=node.parentElement){
-      const t = (node.textContent || '').replace(/\s+/g,' ').trim();
-      if(/FairFight:|Est\.?\s*Stats|May be impossible|User Information|uploaded images|Level\s*\d*|Rank\s*/i.test(t)){
-        // Allow only if this exact node is a compact honor image/name strip, not profile picture/FairFight row.
-        const r = el.getBoundingClientRect?.();
-        const ownText = (el.textContent || '').replace(/\s+/g,' ').trim();
-        const st = String(el.getAttribute?.('style') || '').toLowerCase();
-        const cls = String(el.className || '').toLowerCase();
-
-        if(!r) return true;
-
-        // True profile honor strip is wide and short and has the honor/name visual.
-        const trueStrip = r.width >= 100 && r.height <= 42 && r.width / Math.max(1, r.height) >= 3 &&
-          (st.includes('background-image') || cls.includes('honor') || cls.includes('name') || /[A-Za-z0-9_-]{3,}/.test(ownText));
-
-        if(trueStrip) return false;
-        return true;
-      }
+    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
+      const cls = String(node.className || '').toLowerCase();
+      const id = String(node.id || '').toLowerCase();
+      const t = absp305Text(node.textContent);
+      if(/tooltip|tip|popup|popover|dialog|modal|hover|profile-mini|preview/.test(cls + ' ' + id)) return true;
+      if(/Featuring the|uploaded images|Level\s*\d+|Rank\s*/i.test(t) && t.length < 240) return true;
     }
     return false;
   }
 
-  // Strengthen honorShape without replacing all the original logic.
-  const absp304OldHonorShape = typeof honorShape === 'function' ? honorShape : null;
-  if(absp304OldHonorShape){
+  function absp305IsProfilePictureArea(el){
+    const r = el?.getBoundingClientRect?.();
+    if(!r) return true;
+    // Profile pictures are big/tall. Honor name bars are wide and short.
+    if(r.height > 52) return true;
+    if(r.width < 95) return true;
+    if(r.width / Math.max(1, r.height) < 2.7) return true;
+    return false;
+  }
+
+  const absp305OldHonorShape = typeof honorShape === 'function' ? honorShape : null;
+  if(absp305OldHonorShape){
     honorShape = function(el){
-      if(!absp304OldHonorShape(el)) return false;
-      if(absp304RejectProfileInfoFalseHit(el)) return false;
+      if(!absp305OldHonorShape(el)) return false;
+      if(absp305InTornPopup(el)) return false;
+      if(absp305IsProfilePictureArea(el)) return false;
 
-      const r = el.getBoundingClientRect?.();
-      if(!r) return false;
-
-      // Must remain a real honor-strip shape: wide and short.
-      if(r.height > 48) return false;
-      if(r.width / Math.max(1, r.height) < 2.8) return false;
+      const t = absp305Text(el.textContent || el.parentElement?.textContent);
+      if(/FairFight:|Est\.?\s*Stats|May be impossible|uploaded images|Level\s*\d+|Rank\s*/i.test(t)) {
+        // Only allow if the actual element itself is compact and visually looks like the name strip.
+        const own = absp305Text(el.textContent);
+        const r = el.getBoundingClientRect?.();
+        const st = String(el.getAttribute?.('style') || '').toLowerCase();
+        const cls = String(el.className || '').toLowerCase();
+        const ok = r && r.height <= 42 && r.width >= 120 && r.width / Math.max(1, r.height) >= 3 &&
+          (st.includes('background-image') || cls.includes('honor') || cls.includes('name') || /^[A-Za-z0-9_\-\[\] ]{3,40}$/.test(own));
+        if(!ok) return false;
+      }
 
       return true;
     };
   }
 
-  function absp304BadgeForMount(mount, key){
-    if(!mount || !key) return null;
-
-    // Kill floating document-body badges from earlier versions.
-    document.querySelectorAll('body > .absp31-badge').forEach(x => x.remove());
-
-    let b = mount.querySelector(':scope > .absp31-badge');
+  // Keep badges out of Torn's DOM subtrees. Body-level only.
+  makeBadge = function(key){
+    let b = document.querySelector(`body > .absp31-badge[data-key="${cssEscape(key)}"]`);
     if(!b){
       b = document.createElement('span');
       b.className = 'absp31-badge absp31-unknown';
+      b.dataset.key = key;
       b.textContent = 'N/A';
-      mount.appendChild(b);
+      document.body.appendChild(b);
     }
-
-    // Only one badge inside this honor bar.
-    [...mount.querySelectorAll(':scope > .absp31-badge')].slice(1).forEach(x => x.remove());
-
-    const cs = getComputedStyle(mount);
-    if(cs.position === 'static') mount.style.position = 'relative';
-
-    b.dataset.key = key;
-    b.style.display = 'inline-flex';
-    b.style.visibility = 'visible';
-    b.style.left = '';
-    b.style.top = '';
-    b.style.right = '4px';
-    b.style.bottom = '';
-    b.style.position = 'absolute';
-
     return b;
-  }
-
-  // Override makeBadge and positionBadge so badges lock inside honor bars.
-  makeBadge = function(key){
-    // Actual mount is assigned during paint via window.__absp304CurrentMount.
-    const mount = window.__absp304CurrentMount;
-    if(!mount) return null;
-    return absp304BadgeForMount(mount, key);
   };
 
   positionBadge = function(b, rect){
-    // Nothing to do. The badge is absolutely positioned inside the honor bar.
-    if(!b) return;
-    b.style.right = '4px';
-    b.style.top = '2px';
+    if(!b || !rect) return;
+
+    // Absolute page coordinates, not fixed viewport. This scrolls with the document and won't be copied into tooltips.
+    const w = 50;
+    const pageX = (window.pageXOffset || document.documentElement.scrollLeft || 0);
+    const pageY = (window.pageYOffset || document.documentElement.scrollTop || 0);
+
+    const x = Math.max(2, Math.min(pageX + window.innerWidth - w - 2, pageX + rect.right - w - 4));
+    const y = Math.max(pageY + 56, pageY + rect.top + Math.max(1, Math.min(5, rect.height * 0.10)));
+
+    b.style.left = x + 'px';
+    b.style.top = y + 'px';
+    b.style.right = '';
+    b.style.bottom = '';
+    b.style.position = 'absolute';
+    b.style.display = 'inline-flex';
+    b.style.visibility = 'visible';
   };
 
-  const absp304OldPaint = typeof paint === 'function' ? paint : null;
-  if(absp304OldPaint){
-    paint = async function(){
-      state.pending = false;
-      state.lastPaint = Date.now();
+  // Remove accidental child-mounted badges from v3.0.4 or older installs.
+  function absp305RemoveChildBadges(){
+    document.querySelectorAll('.absp31-badge').forEach(b=>{
+      if(b.parentElement !== document.body) b.remove();
+    });
+  }
 
-      killOld();
-      updateIcon();
-      if(typeof ensureWarLoadButton === 'function') ensureWarLoadButton();
-
-      const found = candidates();
-      const liveKeys = new Set();
-
-      // Remove badges from honor bars that are no longer visible candidates.
-      for(const h of found){
-        const key = h.key;
-        liveKeys.add(key);
-        window.__absp304CurrentMount = h.mount;
-
-        const b = makeBadge(key);
-        window.__absp304CurrentMount = null;
-        if(!b) continue;
-
-        b.dataset.targetId = String(h.id || '');
-
-        let intel = intelFor(h.id);
-        if(!intel && isProfilePage()) intel = visibleIntel();
-        if(intel) saveIntel(h.id, intel);
-
-        updateBadge(b, intel);
-        positionBadge(b, h.rect);
-
-        if(!intel && (!isWarPage || !isWarPage() || (typeof warSafe !== 'undefined' && warSafe.force))) {
-          setTimeout(() => fetchIntel(h.id, h.key), (typeof isWarPage === 'function' && isWarPage()) ? 2200 : 900);
-        }
-      }
-
-      document.querySelectorAll('.absp31-badge').forEach(b => {
-        if(!liveKeys.has(b.dataset.key)) b.remove();
-      });
+  const absp305OldKill = typeof killOld === 'function' ? killOld : null;
+  if(absp305OldKill){
+    killOld = function(){
+      absp305OldKill();
+      absp305RemoveChildBadges();
     };
   }
 
-  // Make popup work with child-mounted badges.
-  document.addEventListener('scroll', () => {
-    // No reposition needed; badge is locked inside honor bar.
+  // Replace scroll behavior: absolute badges naturally scroll, but after scrolling ends update layout lightly.
+  let absp305ScrollTimer = null;
+  window.addEventListener('scroll', () => {
+    clearTimeout(absp305ScrollTimer);
+    absp305ScrollTimer = setTimeout(() => schedule(isWarPage && isWarPage() ? 900 : 300), 350);
   }, {passive:true});
+
+  // Make sure profile tooltip popups never keep copied badges.
+  setInterval(absp305RemoveChildBadges, 1500);
 
 })();
