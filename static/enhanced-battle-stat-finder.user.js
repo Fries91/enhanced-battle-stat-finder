@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder ⚔️
 // @namespace    Fries91.EnhancedBattleStatFinder
-// @version      1.3.6
-// @description  Honor-bar prediction badges with stronger fight result detection, backup save button, FF/BSP bridge, cached intel, and automatic learning.
+// @version      1.3.7
+// @description  Honor-bar prediction badges with safer attack remembering, persistent FF/BSP estimate bridge, backup save, and automatic learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -547,63 +547,7 @@
   }
 
 
-  function setupStrongAttackRemembering(){
-    document.addEventListener('click', (e)=>{
-      const el = e.target?.closest?.('a,button,[onclick],[data-user],[data-id],[data-xid],div');
-      if(!el) return;
-
-      const row = el.closest?.('tr, li, [class*="row"], [class*="member"], [class*="action"], [class*="profile"], div');
-      const blob = [
-        el.href,
-        el.getAttribute?.('href'),
-        el.getAttribute?.('onclick'),
-        el.getAttribute?.('data-user'),
-        el.getAttribute?.('data-id'),
-        el.getAttribute?.('data-xid'),
-        el.getAttribute?.('aria-label'),
-        el.getAttribute?.('title'),
-        el.textContent,
-        el.outerHTML,
-        row?.outerHTML,
-        location.href
-      ].filter(Boolean).join(' ');
-
-      const looksAttack = /attack|fight|user2ID|sid=attack|target|mug|hospital/i.test(blob);
-      if(!looksAttack) return;
-
-      const id = extractTargetIdFromText(blob) || getProfilePageId?.() || detectProfileIdFromPage?.() || findProfileIdFromPageLinks?.();
-      if(!id) return;
-
-      rememberAttackTarget(id, findNearbyName(el) || getPageProfileName() || 'Enemy');
-      GM_setValue('ebsf_attack_click_ts', Date.now());
-      bsfDebugSet?.('target_remembered_id', id);
-      bsfStartDeepFightWatch?.();
-      toast?.('⚔️ Target remembered for learning.');
-      startUniversalFightWatcher();
-      bsfStartDeepFightWatch?.();
-    }, true);
-
-    if(location.href.includes('profiles.php') || /Profile/i.test(document.title || '')){
-      const pid = getProfilePageId?.() || extractTargetIdFromText(location.href) || detectProfileIdFromPage?.();
-      if(pid){
-        document.addEventListener('click', (e)=>{
-          const el = e.target?.closest?.('a,button,div');
-          if(!el) return;
-          const text = (el.textContent || el.getAttribute?.('title') || el.getAttribute?.('aria-label') || el.className || '').toString();
-          const blob = [text, el.outerHTML || ''].join(' ');
-          if(/attack|fight|loader\.php\?sid=attack|user2ID|target/i.test(blob)){
-            rememberAttackTarget(pid, getPageProfileName() || 'Enemy');
-            GM_setValue('ebsf_attack_click_ts', Date.now());
-      bsfDebugSet?.('target_remembered_id', id);
-      bsfStartDeepFightWatch?.();
-            toast?.('⚔️ Target remembered for learning.');
-            startUniversalFightWatcher();
-      bsfStartDeepFightWatch?.();
-          }
-        }, true);
-      }
-    }
-  }
+  function setupStrongAttackRemembering(){ bsfInstallSafeAttackRememberingV137?.(); }
 
   function getPageProfileName(){
     const title = (document.title || '').replace(/\s*\|\s*Torn.*$/i,'').replace(/'s Profile/i,'').trim();
@@ -2424,5 +2368,105 @@ try{
 
   setTimeout(()=>{ bsfBridgeVisibleEstimateToExistingBadge(); paintHonorBadgesOnly?.(); }, 1200);
   setTimeout(()=>{ bsfBridgeVisibleEstimateToExistingBadge(); paintHonorBadgesOnly?.(); }, 3000);
+
+
+
+  /* v1.3.7 safer attack watcher + persistent FF/BSP bridge */
+  function bsfIsRealAttackClickV137(el){
+    if(!el) return false;
+    const href = el.href || el.getAttribute?.('href') || '';
+    const onclick = el.getAttribute?.('onclick') || '';
+    const title = el.getAttribute?.('title') || el.getAttribute?.('aria-label') || '';
+    const txt = (el.textContent || '').trim();
+    if(/sid=attack|user2ID=|attack/i.test(href)) return true;
+    if(/sid=attack|user2ID|attack/i.test(onclick)) return true;
+    if(/^attack$/i.test(txt)) return true;
+    if((el.tagName === 'A' || el.tagName === 'BUTTON') && /attack|fight/i.test([href,onclick,title,txt,String(el.className||'')].join(' '))) return true;
+    return false;
+  }
+
+  function bsfInstallSafeAttackRememberingV137(){
+    if(window.__ebsfSafeAttackRememberingV137) return;
+    window.__ebsfSafeAttackRememberingV137 = true;
+
+    document.addEventListener('click', (e)=>{
+      const el = e.target?.closest?.('a,button,[onclick]');
+      if(!el || !bsfIsRealAttackClickV137(el)) return;
+
+      const row = el.closest?.('tr, li, [class*="row"], [class*="member"]');
+      const blob = [
+        el.href,
+        el.getAttribute?.('href'),
+        el.getAttribute?.('onclick'),
+        el.getAttribute?.('data-user'),
+        el.getAttribute?.('data-id'),
+        el.getAttribute?.('data-xid'),
+        row?.innerHTML,
+        location.href
+      ].filter(Boolean).join(' ');
+
+      const id = extractTargetIdFromText(blob) || getProfilePageId?.() || detectProfileIdFromPage?.() || findProfileIdFromPageLinks?.();
+      if(!id) return;
+
+      rememberAttackTarget(id, findNearbyName(el) || getPageProfileName?.() || 'Enemy');
+      GM_setValue('ebsf_attack_click_ts', Date.now());
+      bsfDebugSet?.('target_remembered_id', id);
+      bsfDebugSet?.('target_remembered_reason', 'real_attack_click');
+      bsfStartDeepFightWatch?.();
+      startUniversalFightWatcher?.();
+      toast?.('⚔️ Target remembered for learning.');
+    }, true);
+  }
+
+  function bsfRefreshVisibleEstimateBridgeV137(){
+    const profileIntel = bsfGetVisibleEstimateIntel?.();
+    if(profileIntel){
+      const pid = bsfFindIdFromContext?.(document.body, document.body) || getProfilePageId?.() || detectProfileIdFromPage?.();
+      if(pid) saveCachedIntel(pid, profileIntel);
+
+      document.querySelectorAll('.ebsfNameBadge').forEach(b=>{
+        if(b.textContent.trim() === 'N/A' || b.classList.contains('unknown')){
+          updateHonorBadge?.(b, profileIntel);
+        }
+      });
+    }
+
+    document.querySelectorAll('.ebsfNameBadge').forEach(b=>{
+      const host = b.closest?.('tr, li, [class*="row"], [class*="member"], [class*="honor"], [class*="name"]') || b.parentElement;
+      const id = extractTargetIdFromText((host?.innerHTML || '') + ' ' + location.href);
+      if(!id) return;
+      const intel = getCachedIntel(id) || bsfGetBspCacheIntel?.(id);
+      if(intel){
+        saveCachedIntel(id, intel);
+        updateHonorBadge?.(b, intel);
+      }
+    });
+  }
+
+  function bsfStartPersistentEstimateBridgeV137(){
+    if(window.__ebsfEstimateBridgeV137Started) return;
+    window.__ebsfEstimateBridgeV137Started = true;
+
+    [800,1800,3500,6000,10000,15000,22000,30000].forEach(t=>{
+      setTimeout(()=>{ bsfRefreshVisibleEstimateBridgeV137(); paintHonorBadgesOnly?.(); }, t);
+    });
+
+    try{
+      const obs = new MutationObserver(()=>{
+        clearTimeout(window.__ebsfBridgeDebounceV137);
+        window.__ebsfBridgeDebounceV137 = setTimeout(()=>bsfRefreshVisibleEstimateBridgeV137(), 700);
+      });
+      obs.observe(document.body, {childList:true, subtree:true, characterData:true});
+      setTimeout(()=>obs.disconnect(), 180000);
+    }catch(e){}
+  }
+
+  // Override broad old watcher: only install strict watcher.
+  if(typeof setupStrongAttackRemembering === 'function'){
+    setupStrongAttackRemembering = function(){ bsfInstallSafeAttackRememberingV137(); };
+  }
+
+  bsfInstallSafeAttackRememberingV137();
+  bsfStartPersistentEstimateBridgeV137();
 
 })();
