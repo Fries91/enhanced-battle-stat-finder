@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder v2
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.0.0
-// @description  Clean stable PDA battle stat badges, FF/BSP bridge, manual/automatic fight learning.
+// @version      2.0.2
+// @description  Stable PDA battle stat badges with clickable intel popup, FF/BSP info bridge, profile-only app icon, and fight learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -32,7 +32,7 @@
   };
 
   GM_addStyle(`
-    .ebsf2-badge{position:absolute!important;right:3px!important;top:2px!important;z-index:80!important;display:inline-flex!important;align-items:center;justify-content:center;min-width:30px;max-width:52px;padding:1px 5px!important;border-radius:4px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;box-shadow:0 1px 4px #0009;pointer-events:none;white-space:nowrap;overflow:hidden}
+    .ebsf2-badge{position:absolute!important;right:3px!important;top:2px!important;z-index:80!important;display:inline-flex!important;align-items:center;justify-content:center;min-width:30px;max-width:52px;padding:1px 5px!important;border-radius:4px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;box-shadow:0 1px 4px #0009;pointer-events:auto;cursor:pointer;white-space:nowrap;overflow:hidden}
     .ebsf2-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
     .ebsf2-fair{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
     .ebsf2-good{background:#422006!important;color:#fde68a!important;border-color:#f59e0b!important}
@@ -47,6 +47,16 @@
     #ebsf2-panel button{background:#1f2937;color:#fde68a;border:1px solid #806500;border-radius:8px;padding:8px 10px;margin:4px;font-weight:900}
     #ebsf2-panel .box{background:#111827;border:1px solid #334155;border-radius:10px;padding:10px;margin:8px 0}
     #ebsf2-save{position:fixed;left:12px;top:120px;z-index:999998;background:#111827;color:#fde68a;border:1px solid #facc15;border-radius:10px;padding:8px;display:none;font:900 12px Arial}
+
+    .ebsf2-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:250px;font:12px Arial,sans-serif;overflow:hidden}
+    .ebsf2-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
+    .ebsf2-pop-close{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important;margin:0!important}
+    .ebsf2-pop-body{padding:10px;line-height:1.45}
+    .ebsf2-pill{display:inline-block;margin-left:4px;padding:1px 5px;border:1px solid #475569;border-radius:999px;background:#111827;color:#fde68a;font-weight:900}
+    .ebsf2-shape{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}
+    .ebsf2-shape div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
+    .ebsf2-note{color:#94a3b8;font-size:11px;margin:8px 0 0}
+
   `);
 
   function safeJson(s){ try{return JSON.parse(s)}catch(e){return null} }
@@ -126,7 +136,7 @@
     app.msg='Logging in...'; render();
     const r=await req('POST','/api/login',{api_key:app.key});
     if(r.ok){
-      app.user=r.user; app.total=r.stats.total;
+      app.user=r.user; app.total=r.stats.total; app.str_stat=r.stats.strength||0; app.def_stat=r.stats.defense||0; app.spd_stat=r.stats.speed||0; app.dex_stat=r.stats.dexterity||0;
       GM_setValue(S.user,JSON.stringify(app.user)); GM_setValue(S.total,app.total);
       app.msg='Logged in. Badges active.';
       paintAll(true);
@@ -284,4 +294,367 @@
     new MutationObserver(()=>{clearTimeout(window.__ebsf2Paint); window.__ebsf2Paint=setTimeout(()=>paintAll(false),500);}).observe(document.body,{childList:true,subtree:true});
   }
   boot();
+
+
+  /* v2.0.1 fixes:
+     - Do not badge profile action/history rows.
+     - Profile page gets one badge on honor/name plate only.
+     - Visible FF/BSP estimate beats weak fight fallback.
+     - Fight loss fallback explains/updates only if no stronger estimate exists.
+  */
+
+  function ebsf201SourceRank(intel){
+    if(!intel) return 0;
+    const src = String(intel.source || '').toLowerCase();
+    if(src.includes('manual') || src.includes('spy')) return 95;
+    if(src.includes('ffscouter') || src.includes('visible_ff_bsp')) return 70;
+    if(src.includes('bsp')) return 66;
+    if(src.includes('fight')) return 40;
+    return Number(intel.confidence || 0);
+  }
+
+  const ebsf201OldSaveIntel = saveIntel;
+  saveIntel = function(id, intel){
+    if(!id || !intel) return;
+    const old = getIntel(id);
+    if(old && ebsf201SourceRank(old) > ebsf201SourceRank(intel)){
+      return; // do not let 42m fight fallback overwrite 246m FF/BSP
+    }
+    return ebsf201OldSaveIntel(id, intel);
+  };
+
+  function ebsf201PageKind(){
+    const txt = (document.body?.innerText || '').slice(0, 5000);
+    if(/Attack log|initiated an attack|lost to|won against|attacking/i.test(document.title + ' ' + txt)) return 'attacklog';
+    if(/User Information|Medals|Awards|Actions/i.test(txt) || /Profile/i.test(document.title || '') || /profiles\.php/.test(location.href)) return 'profile';
+    if(/Members\s+Score|Status\s+Attack|No active chain|Chain active|Lead target/i.test(txt) || /factions\.php/.test(location.href)) return 'faction';
+    return 'other';
+  }
+
+  function ebsf201VisibleIntel(){
+    const intel = visibleIntel?.();
+    if(!intel) return null;
+    intel.source = 'visible_ff_bsp';
+    intel.confidence = Math.max(Number(intel.confidence || 0), 70);
+    return intel;
+  }
+
+  function ebsf201FindProfileMount(){
+    const txt = document.body?.innerText || '';
+    if(!/User Information|Profile/i.test(txt + ' ' + document.title)) return null;
+
+    const candidates = [...document.querySelectorAll('img,[style*="background-image"],[class*="honor"],[class*="name"]')];
+    let best = null, score = -999;
+
+    for(const el of candidates){
+      if(el.closest('#ebsf2-panel')) continue;
+      if(el.closest('#ebsf2-save')) continue;
+
+      const wrapText = (el.parentElement?.innerText || el.closest('div')?.innerText || '').slice(0, 200);
+      if(/Level|Rank|years|months|days|Actions|Awards|Medals/i.test(wrapText)) continue;
+
+      const r = el.getBoundingClientRect?.();
+      if(!r || r.width < 120 || r.height < 10 || r.width > 620 || r.height > 90) continue;
+      if(r.top < 160 || r.top > window.innerHeight + 900) continue;
+
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute('style') || '').toLowerCase();
+      const alt = String(el.getAttribute('alt') || el.getAttribute('title') || '').toLowerCase();
+
+      let s = 0;
+      if(cls.includes('honor')) s += 50;
+      if(cls.includes('name')) s += 30;
+      if(st.includes('background-image')) s += 35;
+      if(el.tagName === 'IMG') s += 20;
+      if(alt) s += 10;
+      s += Math.min(45, r.width / 8);
+      s -= Math.abs(r.height - 32) * .4;
+
+      // Prefer the left/center honor image over right side stat boxes.
+      if(r.left < window.innerWidth * .72) s += 15;
+      if(s > score){ score = s; best = el; }
+    }
+
+    return best ? (best.parentElement || best) : null;
+  }
+
+  async function ebsf201PaintProfile(){
+    const mount = ebsf201FindProfileMount();
+    if(!mount) return;
+
+    // Remove duplicate profile badges first.
+    document.querySelectorAll('.ebsf2-profile-badge').forEach(b => {
+      if(!mount.contains(b)) b.remove();
+    });
+
+    const id = extractId(location.href) || extractId(document.body.innerHTML);
+    let intel = (id && getIntel(id)) || ebsf201VisibleIntel() || (id && bspIntel?.(id)) || null;
+    if(id && intel) saveIntel(id, intel);
+
+    attach(mount, intel);
+    const badge = mount.querySelector(':scope > .ebsf2-badge');
+    if(badge) badge.classList.add('ebsf2-profile-badge');
+  }
+
+  function ebsf201Rows(){
+    const possible = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')];
+    return possible.filter(r => {
+      const text = (r.textContent || '').trim();
+      const rect = r.getBoundingClientRect?.();
+      if(!text || !rect || rect.width < 140 || rect.height < 14) return false;
+      if(rect.bottom < -120 || rect.top > innerHeight + 800) return false;
+
+      // Never badge attack history/log rows.
+      if(/used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text)) return false;
+
+      const shape = r.querySelectorAll?.('td,[class*="cell"],[class*="column"]').length >= 2;
+      const warWords = /Okay|Hospital|Travel|Jail/i.test(text);
+      const hasAttackButton = /(^|\s)Attack(\s|$)/i.test(text);
+      const honor = !!r.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"]');
+
+      return shape && honor && (warWords || hasAttackButton);
+    }).slice(0, 160);
+  }
+
+  async function ebsf201PaintFaction(){
+    for(const row of ebsf201Rows()){
+      const cell = memberCell(row);
+      const mount = honorMount(cell);
+      if(!mount) continue;
+      const intel = await intelFor(row, mount);
+      attach(mount, intel);
+    }
+  }
+
+  const ebsf201OriginalPaintAll = paintAll;
+  paintAll = async function(force){
+    const kind = ebsf201PageKind();
+
+    // Clean all wrong badges from attack logs/history.
+    if(kind === 'attacklog'){
+      document.querySelectorAll('.ebsf2-badge').forEach(b => b.remove());
+      return;
+    }
+
+    if(kind === 'profile'){
+      // Remove row/history badges on profile page, then add only the honor badge.
+      document.querySelectorAll('.ebsf2-badge').forEach(b => b.remove());
+      await ebsf201PaintProfile();
+      return;
+    }
+
+    if(kind === 'faction'){
+      await ebsf201PaintFaction();
+      return;
+    }
+
+    return ebsf201OriginalPaintAll(force);
+  };
+
+  const ebsf201OldSaveFight = saveFight;
+  saveFight = async function(result, manual){
+    const p = pending?.();
+    const before = p ? getIntel(p.id) : null;
+
+    await ebsf201OldSaveFight(result, manual);
+
+    // If visible FF/BSP estimate is present after fight, restore it over weak fallback.
+    const afterVisible = ebsf201VisibleIntel();
+    if(p && before && ebsf201SourceRank(before) > ebsf201SourceRank(getIntel(p.id))){
+      saveIntel(p.id, before);
+    } else if(p && afterVisible) {
+      saveIntel(p.id, afterVisible);
+    }
+
+    setTimeout(()=>paintAll(true), 400);
+    setTimeout(()=>paintAll(true), 1500);
+  };
+
+  // Better attack-log result detection from screenshots:
+  const ebsf201OldResultFromText = resultFromText;
+  resultFromText = function(raw){
+    const t = String(raw || '').replace(/\s+/g, ' ');
+    const me = app.user?.name ? app.user.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+    if(me && new RegExp(me + '\\s+lost\\s+to\\s+', 'i').test(t)) return 'generic_loss';
+    if(me && new RegExp(me + '\\s+won\\s+against\\s+', 'i').test(t)) return 'generic_win';
+    if(/YOU LOST/i.test(t)) return 'generic_loss';
+    if(/YOU WON|VICTORY/i.test(t)) return 'generic_win';
+    return ebsf201OldResultFromText(raw);
+  };
+
+  setTimeout(()=>paintAll(true), 800);
+  setTimeout(()=>paintAll(true), 2500);
+
+
+
+  /* v2.0.2 clickable intel popup + profile-only app icon */
+
+  function ebsf202IsProfilePage(){
+    const txt = (document.body?.innerText || '').slice(0, 5000);
+    return /profiles\.php/.test(location.href) || /Profile/i.test(document.title || '') || /User Information|Medals|Awards|Actions/i.test(txt);
+  }
+
+  function ebsf202UpdateMainIconVisibility(){
+    const btn = document.getElementById('ebsf2-btn');
+    if(!btn) return;
+    btn.style.display = ebsf202IsProfilePage() ? 'block' : 'none';
+  }
+
+  function ebsf202Relation(total){
+    total = Number(total || 0);
+    if(!app.total || !total) return 'Unknown';
+    const r = total / app.total;
+    if(r <= .75) return 'Low';
+    if(r <= 1.15) return 'Equal';
+    return 'High';
+  }
+
+  function ebsf202ParseFFVisibleInfo(){
+    const txt = (document.body?.innerText || '').replace(/\s+/g, ' ');
+    const out = {};
+    let m = txt.match(/FairFight:\s*([0-9.]+[^E]*?)(?=\s*Est\.|\s*Stats:|\s*$)/i);
+    if(m) out.fair_fight = m[1].trim();
+    m = txt.match(/Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i) || txt.match(/Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i);
+    if(m) out.estimated_stats = m[1].trim();
+    return out;
+  }
+
+  function ebsf202CompareStat(enemy, mine){
+    enemy = Number(enemy || 0);
+    mine = Number(mine || 0);
+    if(!enemy || !mine) return 'Unknown';
+    const r = enemy / mine;
+    if(r < .85) return 'Low';
+    if(r <= 1.15) return 'Equal';
+    return 'High';
+  }
+
+  function ebsf202ShapeFromIntel(intel){
+    const shape = {STR:'Unknown', DEF:'Unknown', SPD:'Unknown', DEX:'Unknown'};
+    if(intel?.strength || intel?.str_stat) shape.STR = ebsf202CompareStat(intel.strength || intel.str_stat, app.str_stat || 0);
+    if(intel?.defense || intel?.def_stat) shape.DEF = ebsf202CompareStat(intel.defense || intel.def_stat, app.def_stat || 0);
+    if(intel?.speed || intel?.spd_stat) shape.SPD = ebsf202CompareStat(intel.speed || intel.spd_stat, app.spd_stat || 0);
+    if(intel?.dexterity || intel?.dex_stat) shape.DEX = ebsf202CompareStat(intel.dexterity || intel.dex_stat, app.dex_stat || 0);
+    return shape;
+  }
+
+  function ebsf202MakePopup(targetId, intel, anchor){
+    document.querySelectorAll('.ebsf2-pop').forEach(x=>x.remove());
+
+    const ff = ebsf202ParseFFVisibleInfo();
+    const total = Number(intel?.best_total || intel?.total || 0);
+    const shape = ebsf202ShapeFromIntel(intel || {});
+    const rel = ebsf202Relation(total);
+
+    const pop = document.createElement('div');
+    pop.className = 'ebsf2-pop';
+    pop.innerHTML = `
+      <div class="ebsf2-pop-head">
+        <b>⚔️ Battle Intel</b>
+        <button class="ebsf2-pop-close">×</button>
+      </div>
+      <div class="ebsf2-pop-body">
+        <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} <span class="ebsf2-pill">${rel}</span></div>
+        <div><b>Source:</b> ${esc(intel?.source || 'none')}</div>
+        <div><b>Confidence:</b> ${Math.round(Number(intel?.confidence || 0))}%</div>
+        ${ff.fair_fight ? `<div><b>FF:</b> ${esc(ff.fair_fight)}</div>` : ''}
+        ${ff.estimated_stats ? `<div><b>FF Est:</b> ${esc(ff.estimated_stats)}</div>` : ''}
+        <hr>
+        <div class="ebsf2-shape">
+          <div><b>STR</b><span>${shape.STR}</span></div>
+          <div><b>DEF</b><span>${shape.DEF}</span></div>
+          <div><b>SPD</b><span>${shape.SPD}</span></div>
+          <div><b>DEX</b><span>${shape.DEX}</span></div>
+        </div>
+        <p class="ebsf2-note">Stat split needs spy/manual split or more detailed fight-log learning. FF/BSP gives a total estimate, not always exact STR/DEF/SPD/DEX.</p>
+      </div>
+    `;
+
+    document.body.appendChild(pop);
+    const r = anchor?.getBoundingClientRect?.();
+    if(r){
+      pop.style.left = Math.max(8, Math.min(window.innerWidth - 260, r.left)) + 'px';
+      pop.style.top = Math.max(80, Math.min(window.innerHeight - 250, r.bottom + 6)) + 'px';
+    } else {
+      pop.style.left = '12px';
+      pop.style.top = '120px';
+    }
+
+    pop.querySelector('.ebsf2-pop-close').onclick = ()=>pop.remove();
+    setTimeout(()=>{
+      document.addEventListener('click', function closer(e){
+        if(!pop.contains(e.target) && !e.target.closest('.ebsf2-badge')){
+          pop.remove();
+          document.removeEventListener('click', closer, true);
+        }
+      }, true);
+    }, 100);
+  }
+
+  function ebsf202BadgeIntelFromElement(badge){
+    const id = badge.dataset.targetId || '';
+    if(id && getIntel(id)) return {id, intel:getIntel(id)};
+
+    const total = parseNum(badge.textContent || '');
+    if(total) return {id, intel:{total,best_total:total,label:label(total),confidence:0,source:'badge'}};
+
+    return {id, intel:null};
+  }
+
+  function ebsf202InstallBadgeClick(){
+    if(window.__ebsf202BadgeClick) return;
+    window.__ebsf202BadgeClick = true;
+
+    document.addEventListener('click', e=>{
+      const b = e.target.closest?.('.ebsf2-badge');
+      if(!b) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const got = ebsf202BadgeIntelFromElement(b);
+      ebsf202MakePopup(got.id, got.intel, b);
+    }, true);
+  }
+
+  function ebsf202SetBadgeTargetId(mount, badge){
+    if(!badge) return;
+    const row = mount.closest?.('tr,li,[class*="row"],[class*="member"]') || mount;
+    const id = extractId([location.href, row?.innerHTML, mount?.innerHTML].filter(Boolean).join(' '));
+    if(id) badge.dataset.targetId = String(id);
+  }
+
+  const ebsf202OldAttach = attach;
+  attach = function(mount, intel){
+    ebsf202OldAttach(mount, intel);
+    const b = mount?.querySelector?.(':scope > .ebsf2-badge');
+    if(b){
+      b.style.pointerEvents = 'auto';
+      b.style.cursor = 'pointer';
+      b.title = (b.title || 'Battle Stat Finder') + ' • Tap for details';
+      ebsf202SetBadgeTargetId(mount, b);
+    }
+  };
+
+  const ebsf202OldVisibleIntel = visibleIntel;
+  visibleIntel = function(){
+    const intel = ebsf202OldVisibleIntel();
+    if(!intel) return null;
+    const ff = ebsf202ParseFFVisibleInfo();
+    if(ff.fair_fight || ff.estimated_stats){
+      intel.source = 'visible_ff_bsp';
+      intel.source_detail = [ff.fair_fight ? `FF ${ff.fair_fight}` : '', ff.estimated_stats ? `Est ${ff.estimated_stats}` : ''].filter(Boolean).join(' • ');
+      intel.confidence = Math.max(Number(intel.confidence || 0), 70);
+    }
+    return intel;
+  };
+
+  const ebsf202OldPaintAll = paintAll;
+  paintAll = async function(force){
+    await ebsf202OldPaintAll(force);
+    ebsf202UpdateMainIconVisibility();
+  };
+
+  ebsf202InstallBadgeClick();
+  ebsf202UpdateMainIconVisibility();
+  setInterval(ebsf202UpdateMainIconVisibility, 1500);
+
 })();
