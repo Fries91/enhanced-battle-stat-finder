@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder v2
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.0.6
-// @description  Stable PDA battle stat badges with clean profile-only info/login panel, silent learning, and clickable intel popup.
+// @version      2.0.9
+// @description  Stable PDA battle stat badges with own-profile-only main icon, persistent row badges, fixed popup close, Feed Me Info panel, and 4-tier confidence colors.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -62,8 +62,30 @@
     .ebsf2-tag-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
     .ebsf2-tag-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
     .ebsf2-tag-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
+
+    .ebsf2-tag-orange{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
+    .ebsf2-tag-yellow{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
+
     .ebsf2-conf{display:inline-flex;align-items:center;justify-content:center;margin-left:5px;padding:2px 7px;border-radius:999px;font-weight:900;border:1px solid #64748b}
 
+
+
+    #ebsf2-panel.feed-theme{background:linear-gradient(145deg,#05070d 0%,#0b1220 55%,#111827 100%)!important;border:1px solid rgba(250,204,21,.55)!important;border-radius:22px!important;box-shadow:0 0 0 1px rgba(250,204,21,.12),0 18px 45px #000f, inset 0 0 24px rgba(59,130,246,.08)!important;overflow:hidden}
+    #ebsf2-panel.feed-theme h2{position:relative;background:radial-gradient(circle at top left,rgba(250,204,21,.22),transparent 38%),linear-gradient(90deg,#020617,#0f172a 70%,#111827)!important;border-bottom:1px solid rgba(250,204,21,.35)!important;color:#fde68a!important;text-transform:uppercase;letter-spacing:.8px;text-shadow:0 0 8px rgba(250,204,21,.25)}
+    .ebsf-feed-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9));box-shadow:inset 0 0 18px rgba(250,204,21,.06)}
+    .ebsf-feed-title{font-size:22px;font-weight:1000;color:#facc15;letter-spacing:.5px;text-transform:uppercase}
+    .ebsf-feed-sub{color:#cbd5e1;margin-top:4px;line-height:1.35}
+    .ebsf-feed-grid{display:grid;grid-template-columns:1fr;gap:10px}
+    .ebsf-feed-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35)}
+    .ebsf-feed-card:before{content:"";position:absolute;inset:0;border-radius:18px;background:radial-gradient(circle at top right,rgba(59,130,246,.12),transparent 42%);pointer-events:none}
+    .ebsf-feed-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase;letter-spacing:.3px}
+    .ebsf-feed-card p,.ebsf-feed-card li{color:#dbeafe;line-height:1.42}
+    .ebsf-feed-card ul{margin:7px 0 0 18px;padding:0}
+    .ebsf-feed-login{border-color:rgba(250,204,21,.48)!important;background:linear-gradient(145deg,rgba(30,41,59,.96),rgba(2,6,23,.98))!important;box-shadow:inset 0 0 18px rgba(250,204,21,.05),0 8px 18px rgba(0,0,0,.42)!important}
+    .ebsf-feed-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe!important}
+    .ebsf-feed-chip{display:inline-flex;align-items:center;gap:4px;margin:3px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}
+    #ebsf2-panel.feed-theme input{border-radius:14px!important;border:1px solid rgba(250,204,21,.28)!important;background:#020617!important}
+    #ebsf2-panel.feed-theme button{border-radius:14px!important;background:linear-gradient(180deg,#2a2110,#111827)!important;border:1px solid rgba(250,204,21,.52)!important;color:#fde68a!important;box-shadow:0 4px 12px rgba(0,0,0,.35)}
 
   `);
 
@@ -1007,5 +1029,259 @@
   render = ebsf206RenderCleanPanel;
 
   setTimeout(()=>render?.(), 250);
+
+
+
+  /* v2.0.7 Feed Me Info themed main panel */
+
+  function ebsf207RenderFeedPanel(){
+    const panel = document.getElementById('ebsf2-panel');
+    if(!panel) return;
+
+    panel.className = app.open ? 'open feed-theme' : 'feed-theme';
+    panel.innerHTML = `
+      <h2>🍽️ FEED ME INFO <button style="float:right" id="ebsf2-close">Close</button></h2>
+      <div class="body">
+        <div class="ebsf-feed-hero">
+          <div class="ebsf-feed-title">Feed the Finder</div>
+          <div class="ebsf-feed-sub">
+            Give it clean intel, let it chew through fights, and watch the badges get smarter over time.
+          </div>
+          <div style="margin-top:8px">
+            <span class="ebsf-feed-chip">silent learning</span>
+            <span class="ebsf-feed-chip">honor badges</span>
+            <span class="ebsf-feed-chip">tap for intel</span>
+          </div>
+        </div>
+
+        <div class="ebsf-feed-grid">
+          <div class="ebsf-feed-card">
+            <b>📜 Rules</b>
+            <ul>
+              <li>Use predictions as guidance, not guaranteed wins.</li>
+              <li>Do not share private spy/manual data unless you are allowed to.</li>
+              <li>Fresh intel is better. Old intel may be wrong.</li>
+              <li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li>
+            </ul>
+          </div>
+
+          <div class="ebsf-feed-card">
+            <b>⚔️ How It Works</b>
+            <p>
+              The finder places small stat badges on player honor bars. Tap a badge to open the mini intel popup.
+              It can read visible FF/BSP estimates, saved backend intel, and quiet fight-learning signals.
+            </p>
+            <p>
+              New targets may show <b>N/A</b>. Feed it more info through scans, visible estimates, and fights so it can grow.
+            </p>
+          </div>
+
+          <div class="ebsf-feed-card">
+            <b>✅ Terms of Service</b>
+            <p>
+              All numbers are estimates and may be wrong. You are responsible for your own attacks, choices,
+              losses, wins, and respect gains.
+            </p>
+            <p>
+              This tool organizes information visible to you, provided by you, or gathered through allowed limited-key use.
+            </p>
+          </div>
+
+          <div class="ebsf-feed-card">
+            <b>🔑 API Key Use & Storage</b>
+            <p>
+              Use a <b>limited Torn API key</b>. Your key is stored locally in your browser/PDA userscript storage
+              so the script can log you in and compare targets against your own battle stats.
+            </p>
+            <p>
+              No Torn password is ever requested. The backend uses the key only for login/stat detection or optional
+              estimate support. The script avoids unnecessary API access and is built around limited-key use.
+            </p>
+          </div>
+
+          <div class="ebsf-feed-card ebsf-feed-login">
+            <b>🍟 Login — Feed Me Your Key</b>
+            <input id="ebsf2-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
+            <label style="display:block;margin:8px 0;color:#dbeafe">
+              <input id="ebsf2-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto">
+              Use FF Scouter base intel when available
+            </label>
+            <button id="ebsf2-login">Login / Save</button>
+            <button id="ebsf2-repaint">Repaint badges</button>
+            <div class="ebsf-feed-status">
+              Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const close = panel.querySelector('#ebsf2-close');
+    if(close) close.onclick = ()=>{ app.open=false; render(); };
+
+    const loginBtn = panel.querySelector('#ebsf2-login');
+    if(loginBtn) loginBtn.onclick = login;
+
+    const repaintBtn = panel.querySelector('#ebsf2-repaint');
+    if(repaintBtn) repaintBtn.onclick = ()=>paintAll?.(true);
+
+    ebsf205ForceIconVisibility?.();
+  }
+
+  render = ebsf207RenderFeedPanel;
+  setTimeout(()=>render?.(), 250);
+
+
+
+  /* v2.0.8 fixes:
+     - Prediction boxes remain on faction/war rows.
+     - Big main icon only shows on the logged-in user's own profile.
+     - Closing intel popup does not remove the prediction badge.
+  */
+
+  function ebsf208OwnProfileId(){
+    const id = extractId(location.href) || extractId(document.body?.innerHTML || '');
+    return id ? Number(id) : null;
+  }
+
+  function ebsf208IsOwnProfilePage(){
+    const text = (document.body?.innerText || '').slice(0, 5000);
+    if(/factions\.php/i.test(location.href)) return false;
+    if(/Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text)) return false;
+    if(!(/profiles\.php/i.test(location.href) || /Profile/i.test(document.title || '') || /User Information|Actions|Medals|Awards/i.test(text))) return false;
+
+    const me = Number(app.user?.user_id || 0);
+    if(!me) return false;
+
+    const pid = ebsf208OwnProfileId();
+    if(pid) return pid === me;
+
+    // PDA may hide XID on own profile; fall back to title/name match only when no visible XID.
+    const title = document.title || '';
+    if(app.user?.name && title.toLowerCase().includes(String(app.user.name).toLowerCase())) return true;
+
+    return false;
+  }
+
+  function ebsf208ForceMainIcon(){
+    const btn = document.getElementById('ebsf2-btn');
+    if(!btn) return;
+    btn.style.display = ebsf208IsOwnProfilePage() ? 'block' : 'none';
+  }
+
+  // Override old icon visibility checks.
+  if(typeof ebsf202IsProfilePage === 'function') ebsf202IsProfilePage = ebsf208IsOwnProfilePage;
+  if(typeof ebsf205IsRealProfilePage === 'function') ebsf205IsRealProfilePage = ebsf208IsOwnProfilePage;
+  if(typeof ebsf202UpdateMainIconVisibility === 'function') ebsf202UpdateMainIconVisibility = ebsf208ForceMainIcon;
+  if(typeof ebsf205ForceIconVisibility === 'function') ebsf205ForceIconVisibility = ebsf208ForceMainIcon;
+
+  // Strong faction row painter that does not depend on previous route wrappers.
+  function ebsf208IsFactionWarPage(){
+    const text = (document.body?.innerText || '').slice(0, 6000);
+    return /factions\.php/i.test(location.href) || /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text);
+  }
+
+  async function ebsf208PaintFactionRows(){
+    if(!ebsf208IsFactionWarPage()) return;
+
+    const rows2 = rows ? rows() : [];
+    for(const row of rows2){
+      const cell = memberCell ? memberCell(row) : null;
+      const mount = honorMount ? honorMount(cell) : null;
+      if(!mount) continue;
+      const intel = intelFor ? await intelFor(row, mount) : null;
+      attach?.(mount, intel);
+    }
+  }
+
+  // Patch popup close: remove only the popup, never badges.
+  function ebsf208SafeClosePopups(){
+    document.querySelectorAll('.ebsf2-pop').forEach(p=>p.remove());
+  }
+
+  // Override popup maker with a close handler that cannot catch/remove badges.
+  if(typeof ebsf202MakePopup === 'function'){
+    const ebsf208OldMakePopup = ebsf202MakePopup;
+    ebsf202MakePopup = function(targetId, intel, anchor){
+      ebsf208OldMakePopup(targetId, intel, anchor);
+      const pop = document.querySelector('.ebsf2-pop');
+      if(pop){
+        const close = pop.querySelector('.ebsf2-pop-close');
+        if(close){
+          close.onclick = (ev)=>{
+            ev.preventDefault();
+            ev.stopPropagation();
+            pop.remove();
+            setTimeout(()=>paintAll?.(true), 100);
+          };
+        }
+      }
+    };
+  }
+
+  // Extra safety: if any close click happens, repaint badges shortly after.
+  document.addEventListener('click', e=>{
+    if(e.target.closest?.('.ebsf2-pop-close')){
+      setTimeout(()=>paintAll?.(true), 150);
+      setTimeout(()=>ebsf208PaintFactionRows(), 500);
+    }
+  }, true);
+
+  // Wrap paintAll so faction row badges always return after PDA tab switching.
+  const ebsf208OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
+  if(ebsf208OldPaintAll){
+    paintAll = async function(force){
+      const r = await ebsf208OldPaintAll(force);
+      await ebsf208PaintFactionRows();
+      ebsf208ForceMainIcon();
+      return r;
+    };
+  }
+
+  // Repaint faction rows on PDA route/tab changes and delayed loads.
+  [400, 1200, 2500, 5000, 9000, 15000].forEach(t=>setTimeout(()=>{ ebsf208PaintFactionRows(); ebsf208ForceMainIcon(); }, t));
+  setInterval(()=>{ ebsf208PaintFactionRows(); ebsf208ForceMainIcon(); }, 2500);
+
+  try{
+    if(!window.__ebsf208Obs){
+      window.__ebsf208Obs = new MutationObserver(()=>{
+        clearTimeout(window.__ebsf208Debounce);
+        window.__ebsf208Debounce = setTimeout(()=>{ ebsf208PaintFactionRows(); ebsf208ForceMainIcon(); }, 400);
+      });
+      window.__ebsf208Obs.observe(document.body, {childList:true, subtree:true});
+    }
+  }catch(e){}
+
+  ebsf208ForceMainIcon();
+
+
+
+  /* v2.0.9 confidence color tiers:
+     1-25 red
+     26-45 orange
+     46-65 yellow
+     66-100 green
+  */
+
+  function ebsf209ClassForConfidence(conf){
+    conf = Number(conf || 0);
+    if(conf >= 66) return 'ebsf2-tag-green';
+    if(conf >= 46) return 'ebsf2-tag-yellow';
+    if(conf >= 26) return 'ebsf2-tag-orange';
+    return 'ebsf2-tag-red';
+  }
+
+  function ebsf209Conf(conf){
+    const c = Math.max(0, Math.min(100, Math.round(Number(conf || 0))));
+    return `<span class="ebsf2-conf ${ebsf209ClassForConfidence(c)}">${c}%</span>`;
+  }
+
+  // Override earlier confidence function used by popup.
+  if(typeof ebsf203ClassForConfidence === 'function'){
+    ebsf203ClassForConfidence = ebsf209ClassForConfidence;
+  }
+  if(typeof ebsf203Conf === 'function'){
+    ebsf203Conf = ebsf209Conf;
+  }
 
 })();
