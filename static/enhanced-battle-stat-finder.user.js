@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Enhanced Battle Stat Finder v2
 // @namespace    Fries91.Torn.BattleStatFinder
-// @version      2.1.0
-// @description  Advanced Battle Stat Predictor with draggable profile icon, clean honor-only badges, scrollable Feed the Finder panel, and difficulty-based colors.
+// @version      2.1.1
+// @description  Advanced Battle Stat Predictor with stable honor-bar-only badges, no blinking, draggable profile icon, and Feed the Finder panel.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -1640,5 +1640,203 @@
   [400,1200,2500,5000,9000,15000].forEach(t=>setTimeout(()=>{ ebsf210PaintFactionRows(); ebsf210CleanBadBadges(); ebsf210ForceOwnIcon(); ebsf210MakeIconDraggable(); }, t));
   setInterval(()=>{ ebsf210PaintFactionRows(); ebsf210CleanBadBadges(); ebsf210ForceOwnIcon(); ebsf210MakeIconDraggable(); }, 2500);
   setTimeout(()=>render?.(), 300);
+
+
+
+  /* v2.1.1 Stable honor-bar-only painter
+     Fixes:
+     - Stops blinking caused by competing cleanup/repaint loops.
+     - Removes badges from headers/Attack/Status/Score columns.
+     - Only paints inside the player honor/name plate area.
+  */
+
+  function ebsf211IsFactionPage(){
+    const text = (document.body?.innerText || '').slice(0, 7000);
+    return /factions\.php/i.test(location.href) || /Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(text);
+  }
+
+  function ebsf211IsBadText(text){
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    return !text ||
+      /Members\s+Score\s+Status\s+Attack/i.test(text) ||
+      /^Members\b|^Score\b|^Status\b|^Attack\b/i.test(text) ||
+      /Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(text) ||
+      /used 25 energy attacking|initiated an attack|lost to|won against|sprayed|fired .* rounds|hitting .* for/i.test(text);
+  }
+
+  function ebsf211IsRealMemberRow(row){
+    if(!row) return false;
+    const text = (row.textContent || '').replace(/\s+/g, ' ').trim();
+    const rect = row.getBoundingClientRect?.();
+    if(!rect || rect.width < 230 || rect.height < 22 || rect.bottom < -150 || rect.top > innerHeight + 900) return false;
+    if(ebsf211IsBadText(text)) return false;
+
+    const hasStatusOrAttack = /\bOkay\b|\bHospital\b|\bTravel\b|\bJail\b|\bAbroad\b|\bAttack\b/i.test(text);
+    const hasHonor = !!row.querySelector?.('img,[style*="background-image"],[class*="honor"],[class*="name"],a[href*="profiles.php"]');
+    return hasStatusOrAttack && hasHonor;
+  }
+
+  function ebsf211MemberArea(row){
+    if(!row) return null;
+
+    // Prefer early cells only. This prevents attaching to Status/Attack columns.
+    const cells = [...(row.querySelectorAll?.('td,[class*="cell"],[class*="column"]') || [])];
+    const rowRect = row.getBoundingClientRect?.();
+
+    for(const c of cells.slice(0, 2)){
+      const r = c.getBoundingClientRect?.();
+      const t = (c.textContent || '').trim();
+      if(!r || r.width < 75 || r.height < 16) continue;
+      if(/Score|Status|Attack|Okay/i.test(t) && t.length < 40) continue;
+      if(rowRect && r.left > rowRect.left + rowRect.width * 0.58) continue;
+      return c;
+    }
+
+    // Fallback: first wide child on left half.
+    for(const c of [...(row.children || [])].slice(0, 3)){
+      const r = c.getBoundingClientRect?.();
+      if(!r || r.width < 75 || r.height < 16) continue;
+      if(rowRect && r.left > rowRect.left + rowRect.width * 0.58) continue;
+      return c;
+    }
+
+    return null;
+  }
+
+  function ebsf211HonorMount(row){
+    const area = ebsf211MemberArea(row);
+    if(!area) return null;
+
+    const rowRect = row.getBoundingClientRect?.();
+    const candidates = [...(area.querySelectorAll?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"]') || [])];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const el of candidates){
+      if(el.closest?.('#ebsf2-panel,.ebsf2-pop,#ebsf2-save')) continue;
+      const r = el.getBoundingClientRect?.();
+      if(!r || r.width < 45 || r.height < 10 || r.width > 280 || r.height > 90) continue;
+      if(rowRect && r.left > rowRect.left + rowRect.width * 0.58) continue;
+
+      const txt = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g, ' ').trim();
+      if(/Score|Status|Attack|Okay/i.test(txt) && txt.length < 50) continue;
+
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute('style') || '').toLowerCase();
+      let score = 0;
+      if(cls.includes('honor')) score += 55;
+      if(cls.includes('name')) score += 35;
+      if(st.includes('background-image')) score += 35;
+      if(el.tagName === 'IMG') score += 20;
+      if(el.href && /profiles\.php/i.test(el.href)) score += 25;
+      score += Math.min(35, r.width / 8);
+
+      if(score > bestScore){
+        bestScore = score;
+        best = el;
+      }
+    }
+
+    if(!best) return null;
+
+    // Usually the immediate parent is the true honor/name plate.
+    const p = best.parentElement || best;
+    const pr = p.getBoundingClientRect?.();
+    if(pr && rowRect && pr.left <= rowRect.left + rowRect.width * 0.58 && pr.width <= 310 && pr.height <= 100){
+      return p;
+    }
+    return best;
+  }
+
+  function ebsf211BadgeBelongsOnHonor(badge){
+    if(!badge || badge.closest?.('.ebsf2-pop')) return true;
+
+    const row = badge.closest?.('tr,li,[class*="row"],[class*="member"]');
+    if(row){
+      if(!ebsf211IsRealMemberRow(row)) return false;
+      const rowRect = row.getBoundingClientRect?.();
+      const br = badge.getBoundingClientRect?.();
+      if(rowRect && br && br.left > rowRect.left + rowRect.width * 0.62) return false;
+      return true;
+    }
+
+    // Non-row badges are only allowed on profile pages.
+    const text = (document.body?.innerText || '').slice(0, 5000);
+    const profile = /profiles\.php/i.test(location.href) || /User Information|Actions|Medals|Awards/i.test(text);
+    return profile;
+  }
+
+  function ebsf211CleanWrongBadges(){
+    document.querySelectorAll('.ebsf2-badge').forEach(b=>{
+      if(!ebsf211BadgeBelongsOnHonor(b)) b.remove();
+    });
+  }
+
+  async function ebsf211PaintFactionRows(){
+    if(!ebsf211IsFactionPage()) return;
+
+    const rows = [...document.querySelectorAll('tr,li,[class*="row"],[class*="member"]')]
+      .filter(ebsf211IsRealMemberRow)
+      .slice(0, 180);
+
+    for(const row of rows){
+      const mount = ebsf211HonorMount(row);
+      if(!mount) continue;
+
+      const intel = intelFor ? await intelFor(row, mount) : null;
+      attach?.(mount, intel);
+
+      const b = mount.querySelector?.(':scope > .ebsf2-badge');
+      if(b){
+        b.dataset.ebsfHonorOnly = '1';
+        const rowId = extractId?.([location.href, row.innerHTML, mount.innerHTML].join(' '));
+        if(rowId) b.dataset.targetId = String(rowId);
+      }
+    }
+
+    ebsf211CleanWrongBadges();
+  }
+
+  // Disable the older aggressive cleanup that caused blinking.
+  if(typeof ebsf210CleanBadBadges === 'function'){
+    ebsf210CleanBadBadges = ebsf211CleanWrongBadges;
+  }
+  if(typeof ebsf208PaintFactionRows === 'function'){
+    ebsf208PaintFactionRows = ebsf211PaintFactionRows;
+  }
+  if(typeof ebsf210PaintFactionRows === 'function'){
+    ebsf210PaintFactionRows = ebsf211PaintFactionRows;
+  }
+
+  const ebsf211OldPaintAll = typeof paintAll === 'function' ? paintAll : null;
+  if(ebsf211OldPaintAll){
+    paintAll = async function(force){
+      // Let profile/main logic run, then repair faction page with our stable painter.
+      const r = await ebsf211OldPaintAll(force);
+      await ebsf211PaintFactionRows();
+      ebsf211CleanWrongBadges();
+      ebsf210ForceOwnIcon?.();
+      ebsf208ForceMainIcon?.();
+      return r;
+    };
+  }
+
+  // Less spammy repaint schedule: enough for PDA tab changes, not enough to blink.
+  if(!window.__ebsf211StableLoop){
+    window.__ebsf211StableLoop = true;
+    [500, 1500, 3500, 7000].forEach(t=>setTimeout(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, t));
+    setInterval(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, 5000);
+
+    try{
+      const obs = new MutationObserver(()=>{
+        clearTimeout(window.__ebsf211Debounce);
+        window.__ebsf211Debounce = setTimeout(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, 650);
+      });
+      obs.observe(document.body, {childList:true, subtree:true});
+    }catch(e){}
+  }
+
+  setTimeout(()=>{ ebsf211PaintFactionRows(); ebsf211CleanWrongBadges(); }, 250);
 
 })();
