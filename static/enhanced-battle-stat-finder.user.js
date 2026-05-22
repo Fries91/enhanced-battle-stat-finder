@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.1.0
-// @description  BSP-style attach build: attaches badges only beside real Torn player links/names with XID/user2ID. No image guessing, no floating overlays.
+// @version      3.1.1
+// @description  BSP-style attach build: blocks faction chat, attaches only beside real Torn player links/names, loads all valid links on the current page.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -241,17 +241,31 @@
 
   function isBadArea(el){
     let n = el;
-    for(let i=0; i<7 && n && n !== document.body; i++, n=n.parentElement){
+    for(let i=0; i<10 && n && n !== document.body; i++, n=n.parentElement){
       const cls = String(n.className || '').toLowerCase();
       const id = String(n.id || '').toLowerCase();
+      const role = String(n.getAttribute?.('role') || '').toLowerCase();
+      const aria = String(n.getAttribute?.('aria-label') || '').toLowerCase();
       const t = txt(n);
 
       if(n.closest?.('#absp-bsp-panel,.absp-pop')) return true;
-      if(/tooltip|tip|popover|dialog|modal|profile-mini|preview/.test(cls + ' ' + id)) return true;
-      if(/Type your message here/.test(t)) return true;
+
+      // Hard block all Torn/PDA chat/message containers.
+      if(/chat|message|msg|conversation|channel|compose|textarea|input-wrapper|chatbox|chat-box|chat_list|chat-list|chatwindow|chat-window/.test(cls + ' ' + id + ' ' + role + ' ' + aria)) return true;
+      if(/Type your message here|Last message:|Faction\s*$|Company\s*$|Trade\s*$|Global\s*$|Private\s*$|send message|New message/i.test(t)) return true;
+
+      // Block hover/profile cards/popups so badges do not get copied there.
+      if(/tooltip|tip|popover|dialog|modal|profile-mini|preview|hover|dropdown|context/.test(cls + ' ' + id + ' ' + role + ' ' + aria)) return true;
+      if(/Featuring the|uploaded images/i.test(t) && t.length < 260) return true;
+
+      // Block crimes/home/profile panels that contain player-looking links but are not list/player rows.
       if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|CAR THIEF|JOIN|24hrs/i.test(t)) return true;
       if(/Battle Stats|Strength|Defense|Speed|Dexterity|Job Information|Property Information|Company|Income|Fees|Rating/i.test(t)) return true;
+
+      // Block war/header panels, not actual rows.
       if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t) && t.length < 350) return true;
+
+      // Block top/bottom Torn navigation.
       if(/Messages|Events|Awards|Home|Items|City|Wheel|Stocks/i.test(t) && t.length < 100) return true;
     }
     return false;
@@ -338,7 +352,6 @@
       seenKey.add(key);
       seenHost.add(host);
       out.push({id, host, key});
-      if(out.length >= (isWarPage() ? 30 : 70)) break;
     }
 
     return out;
@@ -461,7 +474,7 @@
     }
 
     document.querySelectorAll('.absp-bsp-badge').forEach(b => {
-      if(!live.has(b.dataset.key) || isBadArea(b)) b.remove();
+      if(!live.has(b.dataset.key) || isBadArea(b) || b.closest('[class*="chat" i],[id*="chat" i],[class*="message" i],[id*="message" i]')) b.remove();
     });
   }
 
@@ -689,8 +702,8 @@
     killOld();
     updateIcon();
 
-    setTimeout(() => schedule(700), isWarPage() ? 4500 : 1600);
-    setTimeout(() => schedule(900), isWarPage() ? 9000 : 4200);
+    setTimeout(() => schedule(700), isWarPage() ? 5000 : 1600);
+    setTimeout(() => schedule(900), isWarPage() ? 9500 : 4200);
 
     let lastMutation = 0;
     try{
