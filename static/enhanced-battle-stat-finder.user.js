@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      2.2.1
-// @description  Honor-bar-only PDA build: stable player honor/name badges, no chat/crime/header boxes, colored popup, own-profile icon.
+// @version      2.2.2
+// @description  Honor-bar-only PDA build: one stable badge per player honor/name bar, no attack-column badges, no duplicates, colored popup, own-profile icon.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -685,4 +685,261 @@
   }
 
   boot();
+
+
+  /* v2.2.2 strict honor mount override
+     Fixes:
+     - Attack column badges.
+     - Double/stacked badges on honor bars.
+     - Uses attack links only to find target ID, never as a badge mount.
+     - One chosen badge mount per player row.
+  */
+
+  function absp222IsAttackColumn(el){
+    if(!el) return false;
+    const blob = [
+      el.textContent,
+      el.getAttribute?.('href'),
+      el.getAttribute?.('onclick'),
+      el.getAttribute?.('title'),
+      el.className
+    ].filter(Boolean).join(' ');
+    if(/\bAttack\b/i.test(blob) || /sid=attack|user2ID/i.test(blob)) return true;
+
+    let node = el;
+    for(let i=0; i<5 && node && node !== document.body; i++, node=node.parentElement){
+      const t = (node.textContent || '').replace(/\s+/g,' ').trim();
+      const r = node.getBoundingClientRect?.();
+      if(r && r.width < 120 && /\bAttack\b/i.test(t)) return true;
+    }
+    return false;
+  }
+
+  function absp222RowForElement(el){
+    let node = el;
+    for(let i=0; i<9 && node && node !== document.body; i++, node=node.parentElement){
+      const r = node.getBoundingClientRect?.();
+      if(!r || r.width < 220 || r.height < 20) continue;
+      const t = (node.textContent || '').replace(/\s+/g,' ').trim();
+      if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t)) continue;
+      if(/used 25 energy attacking|initiated an attack|lost to|won against|fired .* rounds/i.test(t)) continue;
+
+      const id = idNear(node);
+      const hasStatus = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b/i.test(t);
+      const hasVisual = !!node.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]');
+      if(id && hasVisual && hasStatus) return node;
+    }
+    return null;
+  }
+
+  function absp222VisualHonorCandidate(el, row){
+    if(!el || !row) return false;
+    if(el.closest?.('#absp-panel,.absp-pop')) return false;
+    if(isChatOrCrime(el)) return false;
+    if(absp222IsAttackColumn(el)) return false;
+
+    const er = el.getBoundingClientRect?.();
+    const rr = row.getBoundingClientRect?.();
+    if(!er || !rr) return false;
+
+    // Must be on the left member/name side, never score/status/attack side.
+    if(er.left > rr.left + rr.width * 0.58) return false;
+
+    if(er.width < 55 || er.width > 320 || er.height < 10 || er.height > 95) return false;
+    if(er.bottom < -120 || er.top > innerHeight + 800) return false;
+
+    const t = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g,' ').trim();
+    if(/Score|Status|Attack|Okay|Members/i.test(t) && t.length < 60) return false;
+
+    const cls = String(el.className || '').toLowerCase();
+    const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+    if(cls.includes('honor') || cls.includes('name')) return true;
+    if(st.includes('background-image')) return true;
+    if(el.tagName === 'IMG') return true;
+    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) return true;
+    if(el.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')) return true;
+
+    return false;
+  }
+
+  function absp222BestMountForRow(row){
+    if(!row) return null;
+    const rr = row.getBoundingClientRect?.();
+    if(!rr) return null;
+
+    const candidates = [...row.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const raw of candidates){
+      let el = raw;
+
+      // Prefer compact parent plate if it is still left-side and visual.
+      for(let i=0; i<3 && el.parentElement && el.parentElement !== document.body; i++){
+        const p = el.parentElement;
+        if(absp222VisualHonorCandidate(p, row)){
+          el = p;
+        } else {
+          break;
+        }
+      }
+
+      if(!absp222VisualHonorCandidate(el, row)) continue;
+
+      const r = el.getBoundingClientRect();
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+      let score = 0;
+      if(cls.includes('honor')) score += 60;
+      if(cls.includes('name')) score += 35;
+      if(st.includes('background-image')) score += 35;
+      if(el.querySelector?.('[style*="background-image"],img')) score += 25;
+      if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) score += 20;
+      score += Math.min(40, r.width / 7);
+
+      // Prefer the visible name/honor strip, not tiny icons.
+      if(r.width >= 100) score += 15;
+      if(r.left < rr.left + rr.width * 0.45) score += 10;
+
+      if(score > bestScore){
+        bestScore = score;
+        best = el;
+      }
+    }
+
+    return best;
+  }
+
+  function absp222RemoveRowDuplicates(row, keepMount){
+    if(!row) return;
+    row.querySelectorAll('.absp-hb-badge').forEach(b=>{
+      if(b.parentElement !== keepMount) b.remove();
+    });
+    if(keepMount){
+      [...keepMount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x=>x.remove());
+    }
+  }
+
+  async function absp222PaintHonors(){
+    const body = (document.body?.innerText || '').slice(0, 9000);
+    const allowed = /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
+      /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(body);
+
+    if(!allowed) return;
+
+    const possibleRows = new Set();
+
+    document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]').forEach(el=>{
+      const row = absp222RowForElement(el);
+      if(row) possibleRows.add(row);
+    });
+
+    // Profile page fallback: use profile honor image/name even if no faction-style row.
+    if(isProfilePage()){
+      const pid = extractId(location.href) || extractId(document.body?.innerHTML || '');
+      if(pid){
+        const profileCandidates = [...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
+        let best = null, score = -999;
+        for(const el of profileCandidates){
+          if(isChatOrCrime(el) || badContext(el) || absp222IsAttackColumn(el)) continue;
+          const r = el.getBoundingClientRect?.();
+          if(!r || r.width < 70 || r.width > 450 || r.height < 10 || r.height > 120 || r.top < 120) continue;
+          let s = Math.min(60, r.width / 6);
+          if(String(el.getAttribute?.('style') || '').includes('background-image')) s += 40;
+          if(el.tagName === 'IMG') s += 20;
+          if(s > score){ score = s; best = el.parentElement || el; }
+        }
+        if(best){
+          let intel = intelFor(pid) || visibleIntel();
+          if(intel) saveIntel(pid, intel);
+          updateMount(best, intel, pid);
+        }
+      }
+    }
+
+    let painted = 0;
+    for(const row of possibleRows){
+      if(painted >= 90) break;
+
+      const id = idNear(row);
+      if(!id) continue;
+
+      const mount = absp222BestMountForRow(row);
+      if(!mount) continue;
+
+      absp222RemoveRowDuplicates(row, mount);
+
+      let intel = intelFor(id);
+      if(intel) saveIntel(id, intel);
+
+      updateMount(mount, intel, id);
+      painted++;
+
+      if(!intel) fetchIntel(id, mount);
+    }
+
+    absp222Clean();
+  }
+
+  function absp222Clean(){
+    // Hide older/other badge systems.
+    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge').forEach(x => {
+      x.style.display = 'none';
+      x.style.visibility = 'hidden';
+      x.style.pointerEvents = 'none';
+    });
+
+    document.querySelectorAll('.absp-hb-badge').forEach(b=>{
+      if(b.closest?.('.absp-pop')) return;
+      const mount = b.parentElement;
+      if(!mount || !b.dataset.targetId){
+        b.remove();
+        return;
+      }
+
+      if(isChatOrCrime(mount) || badContext(mount) || absp222IsAttackColumn(mount)){
+        b.remove();
+        return;
+      }
+
+      const row = absp222RowForElement(mount);
+      if(row){
+        const best = absp222BestMountForRow(row);
+        if(best !== mount){
+          b.remove();
+          return;
+        }
+      } else if(!isProfilePage()){
+        b.remove();
+      }
+    });
+
+    updateIcon();
+  }
+
+  // Override the old honor painter with this stricter one.
+  paintHonors = absp222PaintHonors;
+  clean = absp222Clean;
+
+  function absp222Schedule(ms=800){
+    clearTimeout(window.__absp222Timer);
+    window.__absp222Timer = setTimeout(async ()=>{
+      await absp222PaintHonors();
+      absp222Clean();
+    }, ms);
+  }
+
+  [300, 1200, 2600, 5200].forEach(t=>setTimeout(()=>absp222Schedule(50), t));
+
+  try{
+    const obs222 = new MutationObserver(()=>absp222Schedule(1100));
+    obs222.observe(document.body, {childList:true, subtree:true});
+  }catch(e){}
+
+  setInterval(()=>absp222Clean(), 3000);
+  absp222Schedule(100);
+
 })();
