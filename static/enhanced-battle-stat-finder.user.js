@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      2.2.2
-// @description  Honor-bar-only PDA build: one stable badge per player honor/name bar, no attack-column badges, no duplicates, colored popup, own-profile icon.
+// @version      2.2.3
+// @description  Honor-bar-only PDA build with stable N/A fallback when player IDs are hidden, no attack-column badges, no duplicates.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -941,5 +941,294 @@
 
   setInterval(()=>absp222Clean(), 3000);
   absp222Schedule(100);
+
+
+
+  /* v2.2.3 stable N/A fallback
+     v2.2.2 was too strict when PDA hid player IDs.
+     This paints one stable N/A on the left honor/name bar even without an ID.
+     If an ID is found later, the same badge updates with real intel.
+  */
+
+  function absp223CleanText(s){
+    return String(s || '').replace(/\s+/g,' ').trim();
+  }
+
+  function absp223RowLooksPlayer(row){
+    if(!row || isChatOrCrime(row)) return false;
+    const r = row.getBoundingClientRect?.();
+    if(!r || r.width < 220 || r.height < 22 || r.bottom < -120 || r.top > innerHeight + 900) return false;
+
+    const t = absp223CleanText(row.textContent);
+    if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t)) return false;
+    if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|JOIN|24hrs/i.test(t)) return false;
+    if(/used 25 energy attacking|initiated an attack|lost to|won against|fired .* rounds/i.test(t)) return false;
+
+    const hasStatusOrAttack = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b/i.test(t);
+    const hasVisual = !!row.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]');
+    return hasStatusOrAttack && hasVisual;
+  }
+
+  function absp223RowFor(el){
+    let node = el;
+    for(let i=0; i<9 && node && node !== document.body; i++, node=node.parentElement){
+      if(absp223RowLooksPlayer(node)) return node;
+    }
+    return null;
+  }
+
+  function absp223IsGoodHonorVisual(el, row){
+    if(!el || !row) return false;
+    if(el.closest?.('#absp-panel,.absp-pop')) return false;
+    if(isChatOrCrime(el) || absp222IsAttackColumn(el)) return false;
+
+    const er = el.getBoundingClientRect?.();
+    const rr = row.getBoundingClientRect?.();
+    if(!er || !rr) return false;
+
+    // Left name side only.
+    if(er.left > rr.left + rr.width * 0.58) return false;
+
+    if(er.width < 55 || er.width > 340 || er.height < 10 || er.height > 100) return false;
+    if(er.bottom < -120 || er.top > innerHeight + 900) return false;
+
+    const local = absp223CleanText(el.textContent || el.parentElement?.textContent);
+    if(/Score|Status|Attack|Okay|Members/i.test(local) && local.length < 65) return false;
+
+    const cls = String(el.className || '').toLowerCase();
+    const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+    if(cls.includes('honor') || cls.includes('name')) return true;
+    if(st.includes('background-image')) return true;
+    if(el.tagName === 'IMG') return true;
+    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) return true;
+    if(el.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')) return true;
+
+    return false;
+  }
+
+  function absp223BestMount(row){
+    if(!row) return null;
+    const rr = row.getBoundingClientRect?.();
+    if(!rr) return null;
+
+    const candidates = [...row.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const raw of candidates){
+      let el = raw;
+
+      // Prefer full honor/name plate over inner img.
+      for(let i=0; i<3 && el.parentElement && el.parentElement !== document.body; i++){
+        const p = el.parentElement;
+        if(absp223IsGoodHonorVisual(p, row)) el = p;
+        else break;
+      }
+
+      if(!absp223IsGoodHonorVisual(el, row)) continue;
+
+      const r = el.getBoundingClientRect();
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+      let score = 0;
+      if(cls.includes('honor')) score += 60;
+      if(cls.includes('name')) score += 35;
+      if(st.includes('background-image')) score += 35;
+      if(el.querySelector?.('[style*="background-image"],img')) score += 25;
+      if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) score += 20;
+      if(r.width >= 100) score += 15;
+      if(r.left < rr.left + rr.width * 0.45) score += 10;
+      score += Math.min(40, r.width / 7);
+
+      if(score > bestScore){
+        bestScore = score;
+        best = el;
+      }
+    }
+
+    return best;
+  }
+
+  function absp223FallbackKey(row, mount){
+    const raw = absp223CleanText(mount?.textContent || row?.textContent || '');
+    let name = raw
+      .replace(/\bOkay\b|\bAttack\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b/ig, ' ')
+      .replace(/\b0\.00\b/g, ' ')
+      .replace(/\s+/g,' ')
+      .trim()
+      .slice(0, 40);
+
+    if(!name){
+      const r = mount?.getBoundingClientRect?.();
+      name = r ? `row_${Math.round(r.top)}_${Math.round(r.left)}` : 'unknown_row';
+    }
+    return 'name:' + name;
+  }
+
+  function absp223UpdateMount(mount, intel, idOrKey){
+    if(!mount || !idOrKey) return;
+
+    let b = mount.querySelector(':scope > .absp-hb-badge');
+    if(!b){
+      b = document.createElement('span');
+      b.className = 'absp-hb-badge';
+      const cs = getComputedStyle(mount);
+      if(cs.position === 'static') mount.style.position = 'relative';
+      mount.appendChild(b);
+    }
+
+    [...mount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x => x.remove());
+
+    const total = Number(intel?.best_total || intel?.total || 0);
+    if(!total){
+      b.className = 'absp-hb-badge absp-unknown';
+      b.textContent = 'N/A';
+      b.title = 'No usable intel yet';
+    } else {
+      const adjusted = {...intel, confidence:riskConfidence(intel)};
+      const d = diff(total, adjusted.label);
+      b.className = `absp-hb-badge absp-${d}`;
+      b.textContent = fmt(total);
+      b.title = `${adjusted.source || 'intel'} • ${d} • ${adjusted.confidence}% • Tap for details`;
+    }
+
+    if(/^\d+$/.test(String(idOrKey))) {
+      b.dataset.targetId = String(idOrKey);
+      delete b.dataset.targetKey;
+    } else {
+      b.dataset.targetKey = String(idOrKey);
+    }
+  }
+
+  function absp223RemoveDuplicates(row, keepMount){
+    if(!row) return;
+    row.querySelectorAll('.absp-hb-badge').forEach(b=>{
+      if(b.parentElement !== keepMount) b.remove();
+    });
+    if(keepMount){
+      [...keepMount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x=>x.remove());
+    }
+  }
+
+  async function absp223PaintHonors(){
+    const body = (document.body?.innerText || '').slice(0, 9000);
+    const allowed = /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
+      /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(body);
+
+    if(!allowed) return;
+
+    const possibleRows = new Set();
+    document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]').forEach(el=>{
+      const row = absp223RowFor(el);
+      if(row) possibleRows.add(row);
+    });
+
+    let painted = 0;
+    for(const row of possibleRows){
+      if(painted >= 100) break;
+
+      const mount = absp223BestMount(row);
+      if(!mount) continue;
+
+      const id = idNear(row) || idNear(mount);
+      const idOrKey = id || absp223FallbackKey(row, mount);
+
+      absp223RemoveDuplicates(row, mount);
+
+      let intel = id ? intelFor(id) : null;
+      if(intel && id) saveIntel(id, intel);
+
+      absp223UpdateMount(mount, intel, idOrKey);
+      painted++;
+
+      if(id && !intel) fetchIntel(id, mount);
+    }
+
+    // Profile page fallback.
+    if(isProfilePage()){
+      const pid = extractId(location.href) || extractId(document.body?.innerHTML || '');
+      if(pid){
+        const candidates = [...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
+        let best = null, score = -999;
+        for(const el of candidates){
+          if(isChatOrCrime(el) || badContext(el) || absp222IsAttackColumn(el)) continue;
+          const r = el.getBoundingClientRect?.();
+          if(!r || r.width < 70 || r.width > 450 || r.height < 10 || r.height > 120 || r.top < 120) continue;
+
+          let s = Math.min(60, r.width / 6);
+          if(String(el.getAttribute?.('style') || '').includes('background-image')) s += 40;
+          if(el.tagName === 'IMG') s += 20;
+          if(s > score){ score = s; best = el.parentElement || el; }
+        }
+        if(best){
+          let intel = intelFor(pid) || visibleIntel();
+          if(intel) saveIntel(pid, intel);
+          absp223UpdateMount(best, intel, pid);
+        }
+      }
+    }
+
+    absp223Clean();
+  }
+
+  function absp223Clean(){
+    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge').forEach(x => {
+      x.style.display = 'none';
+      x.style.visibility = 'hidden';
+      x.style.pointerEvents = 'none';
+    });
+
+    document.querySelectorAll('.absp-hb-badge').forEach(b=>{
+      if(b.closest?.('.absp-pop')) return;
+      const mount = b.parentElement;
+
+      if(!mount || (!b.dataset.targetId && !b.dataset.targetKey)){
+        b.remove();
+        return;
+      }
+
+      if(isChatOrCrime(mount) || badContext(mount) || absp222IsAttackColumn(mount)){
+        b.remove();
+        return;
+      }
+
+      const row = absp223RowFor(mount);
+      if(row){
+        const best = absp223BestMount(row);
+        if(best !== mount){
+          b.remove();
+          return;
+        }
+      } else if(!isProfilePage()){
+        b.remove();
+      }
+    });
+
+    updateIcon();
+  }
+
+  paintHonors = absp223PaintHonors;
+  clean = absp223Clean;
+
+  function absp223Schedule(ms=800){
+    clearTimeout(window.__absp223Timer);
+    window.__absp223Timer = setTimeout(async ()=>{
+      await absp223PaintHonors();
+      absp223Clean();
+    }, ms);
+  }
+
+  [250, 900, 1800, 3600, 6500].forEach(t=>setTimeout(()=>absp223Schedule(50), t));
+
+  try{
+    const obs223 = new MutationObserver(()=>absp223Schedule(950));
+    obs223.observe(document.body, {childList:true, subtree:true});
+  }catch(e){}
+
+  setInterval(()=>absp223Clean(), 3500);
+  absp223Schedule(100);
 
 })();
