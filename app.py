@@ -2,7 +2,7 @@ import os, time, json, sqlite3, requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Advanced Battle Stat Predictor v2.1.7 Balanced"
+APP_NAME = "Advanced Battle Stat Predictor v2.1.9 Balanced"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "3679030").split(",") if x.strip()}
 FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com").rstrip("/")
