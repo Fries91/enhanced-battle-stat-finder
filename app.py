@@ -1,1127 +1,359 @@
-import os
-import time
-import json
-import sqlite3
-import hashlib
-import requests
-from functools import wraps
+import os, time, json, sqlite3, requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Enhanced Battle Stat Finder v1.3.8"
+APP_NAME = "Enhanced Battle Stat Finder v2.0.0"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
-ADMIN_USER_IDS = {
-    int(x.strip())
-    for x in os.environ.get("ADMIN_USER_IDS", "3679030").split(",")
-    if x.strip().isdigit()
-}
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "")
-TORN_API_BASE = "https://api.torn.com"
-TORNSTATS_API_BASE = "https://www.tornstats.com/api/v2"
-YATA_API_BASE = os.environ.get("YATA_API_BASE", "")
-FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com")
+ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "3679030").split(",") if x.strip()}
+FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com").rstrip("/")
 
 app = Flask(__name__, static_folder="static")
 CORS(app)
 
-
 def now_ts():
     return int(time.time())
 
+def clean_num(v):
+    if v is None:
+        return 0
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().lower().replace(",", "")
+    mult = 1
+    if s.endswith("k"):
+        mult, s = 1_000, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1_000_000, s[:-1]
+    elif s.endswith("b"):
+        mult, s = 1_000_000_000, s[:-1]
+    elif s.endswith("t"):
+        mult, s = 1_000_000_000_000, s[:-1]
+    try:
+        return float(s) * mult
+    except Exception:
+        return 0
 
-def ensure_dirs():
-    folder = os.path.dirname(DB_PATH)
-    if folder:
-        os.makedirs(folder, exist_ok=True)
-    os.makedirs("static", exist_ok=True)
+def fmt_short(n):
+    n = float(n or 0)
+    for unit, div in [("t",1e12),("b",1e9),("m",1e6),("k",1e3)]:
+        if abs(n) >= div:
+            return f"{n/div:.1f}{unit}".replace(".0", "")
+    return str(int(n))
 
+def ensure_db():
+    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    with sqlite3.connect(DB_PATH) as con:
+        con.row_factory = sqlite3.Row
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+          user_id INTEGER PRIMARY KEY,
+          name TEXT,
+          faction_id INTEGER,
+          faction_name TEXT,
+          total REAL,
+          str_stat REAL,
+          def_stat REAL,
+          spd_stat REAL,
+          dex_stat REAL,
+          updated_at INTEGER
+        )""")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS enemy_stats (
+          user_id INTEGER PRIMARY KEY,
+          name TEXT,
+          faction_id INTEGER,
+          total REAL,
+          range_low REAL,
+          range_high REAL,
+          label TEXT,
+          confidence REAL,
+          source TEXT,
+          source_detail TEXT,
+          updated_at INTEGER
+        )""")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS attack_learning (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          attacker_id INTEGER,
+          attacker_name TEXT,
+          attacker_total REAL,
+          target_id INTEGER,
+          target_name TEXT,
+          result TEXT,
+          fight_meta TEXT,
+          created_at INTEGER
+        )""")
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS external_estimates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          target_id INTEGER,
+          target_name TEXT,
+          target_faction_id INTEGER,
+          estimate_total REAL,
+          source TEXT,
+          source_detail TEXT,
+          confidence REAL,
+          created_at INTEGER
+        )""")
+ensure_db()
 
 def db():
-    ensure_dirs()
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
 
-
-def init_db():
-    ensure_dirs()
-    with db() as con:
-        con.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT,
-                faction_id INTEGER,
-                faction_name TEXT,
-                api_key_hash TEXT,
-                share_attack_learning INTEGER DEFAULT 1,
-                share_spies INTEGER DEFAULT 1,
-                tornstats_key TEXT,
-                yata_key TEXT,
-                created_at INTEGER,
-                last_seen INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS enemy_stats (
-                user_id INTEGER PRIMARY KEY,
-                name TEXT,
-                faction_id INTEGER,
-                strength REAL,
-                defense REAL,
-                speed REAL,
-                dexterity REAL,
-                total REAL,
-                range_low REAL,
-                range_high REAL,
-                build_shape TEXT,
-                confidence REAL DEFAULT 0,
-                source TEXT,
-                source_detail TEXT,
-                updated_at INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS spy_reports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                target_id INTEGER NOT NULL,
-                target_name TEXT,
-                target_faction_id INTEGER,
-                strength REAL,
-                defense REAL,
-                speed REAL,
-                dexterity REAL,
-                total REAL,
-                source TEXT,
-                source_detail TEXT,
-                submitted_by INTEGER,
-                submitted_by_name TEXT,
-                created_at INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS external_estimates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                target_id INTEGER NOT NULL,
-                target_name TEXT,
-                target_faction_id INTEGER,
-                estimate_total REAL,
-                range_low REAL,
-                range_high REAL,
-                source TEXT,
-                source_detail TEXT,
-                confidence REAL DEFAULT 50,
-                submitted_by INTEGER,
-                created_at INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS attack_learning (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                attacker_id INTEGER NOT NULL,
-                attacker_name TEXT,
-                attacker_total REAL,
-                target_id INTEGER NOT NULL,
-                target_name TEXT,
-                result TEXT,
-                confidence_weight REAL DEFAULT 1,
-                note TEXT,
-                fight_meta TEXT,
-                detected_confidence REAL DEFAULT 50,
-                result_source TEXT,
-                created_at INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS scan_cache (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                faction_id INTEGER,
-                enemy_faction_id INTEGER,
-                payload TEXT,
-                created_at INTEGER
-            );
-            """
-        )
-
-        # Lightweight migrations for existing Render SQLite databases.
-        existing_cols = {row["name"] for row in con.execute("PRAGMA table_info(attack_learning)").fetchall()}
-        migrations = {
-            "fight_meta": "ALTER TABLE attack_learning ADD COLUMN fight_meta TEXT",
-            "detected_confidence": "ALTER TABLE attack_learning ADD COLUMN detected_confidence REAL DEFAULT 50",
-            "result_source": "ALTER TABLE attack_learning ADD COLUMN result_source TEXT",
-        }
-        for col, sql in migrations.items():
-            if col not in existing_cols:
-                con.execute(sql)
-
-
-init_db()
-
-
-def hash_key(api_key):
-    if not api_key:
-        return None
-    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-
-
-def clean_num(v):
-    if v in (None, "", "—", "-"):
-        return None
-    if isinstance(v, (int, float)):
-        return float(v)
-    s = str(v).replace(",", "").strip().lower()
-    mult = 1
-    if s.endswith("k"):
-        mult = 1_000
-        s = s[:-1]
-    elif s.endswith("m"):
-        mult = 1_000_000
-        s = s[:-1]
-    elif s.endswith("b"):
-        mult = 1_000_000_000
-        s = s[:-1]
-    try:
-        return float(s) * mult
-    except Exception:
-        return None
-
-
-def total_stats(strength=None, defense=None, speed=None, dexterity=None):
-    vals = [clean_num(strength), clean_num(defense), clean_num(speed), clean_num(dexterity)]
-    if all(v is not None for v in vals):
-        return sum(vals)
-    return None
-
-
-def extract_battle_stats(payload):
-    """Best-effort parser for Torn user battlestats responses.
-    Returns strength/defense/speed/dexterity/total when present.
-    """
-    def pick(d, names):
-        if not isinstance(d, dict):
-            return None
-        for n in names:
-            if n in d:
-                v = clean_num(d.get(n))
-                if v is not None:
-                    return v
-        return None
-
-    containers = [payload]
-    for key in ("battle_stats", "battlestats", "stats", "personalstats"):
-        if isinstance(payload, dict) and isinstance(payload.get(key), dict):
-            containers.append(payload.get(key))
-
-    strength = defense = speed = dexterity = total = None
-    for c in containers:
-        strength = strength or pick(c, ("strength", "str"))
-        defense = defense or pick(c, ("defense", "defence", "def"))
-        speed = speed or pick(c, ("speed", "spd"))
-        dexterity = dexterity or pick(c, ("dexterity", "dex"))
-        total = total or pick(c, ("total", "total_battle_stats", "battle_stats_total", "totalstats"))
-
-    calc_total = total_stats(strength, defense, speed, dexterity)
-    if calc_total:
-        total = calc_total
-
-    return {
-        "strength": strength,
-        "defense": defense,
-        "speed": speed,
-        "dexterity": dexterity,
-        "total": total,
-        "effective_total": total,
-    }
-
-
-def detect_build_shape(strength, defense, speed, dexterity):
-    vals = {
-        "strength": clean_num(strength) or 0,
-        "defense": clean_num(defense) or 0,
-        "speed": clean_num(speed) or 0,
-        "dexterity": clean_num(dexterity) or 0,
-    }
-    total = sum(vals.values())
-    if total <= 0:
-        return "unknown"
-    top_key, top_val = max(vals.items(), key=lambda x: x[1])
-    if top_val / total >= 0.45:
-        return f"{top_key}-heavy"
-    if max(vals.values()) - min(vals.values()) <= total * 0.12:
-        return "balanced"
-    return "mixed"
-
-
-def label_vs_you(enemy_total, your_total):
-    enemy_total = clean_num(enemy_total)
+def user_label(total, your_total):
+    total = clean_num(total)
     your_total = clean_num(your_total)
-    if not enemy_total or not your_total:
+    if not total or not your_total:
         return "Unknown"
-    ratio = enemy_total / your_total
-    if ratio <= 0.75:
+    r = total / your_total
+    if r <= .75:
         return "Easy"
-    if 0.90 <= ratio <= 1.10:
+    if r <= 1.10:
         return "Fair"
-    if 1.10 < ratio <= 1.25:
+    if r <= 1.35:
         return "Good"
-    if 1.25 < ratio <= 1.50:
+    if r <= 1.75:
         return "Difficult"
-    if ratio > 1.50:
-        return "Avoid"
-    return "Easy"
+    return "Avoid"
 
-
-def source_weight(source, age_seconds=0):
-    base = {
-        "manual_spy": 98,
-        "tornstats": 94,
-        "yata": 92,
-        "bsp": 78,
-        "fair_fight_scout": 72,
-        "ffs": 72,
-        "ffscouter": 70,
-        "ff_base": 68,
-        "attack_learning": 65,
-        "estimate": 45,
-    }.get((source or "").lower(), 50)
-    days = age_seconds / 86400
-    decay = max(0.35, 1 - (days * 0.012))
-    return round(base * decay, 1)
-
-
-def normalize_enemy_row(row, your_total=None):
+def normalize(row, your_total=0):
+    if not row:
+        return None
     d = dict(row)
-    best_total = d.get("total")
-    if not best_total and d.get("range_low") and d.get("range_high"):
-        best_total = (d.get("range_low") + d.get("range_high")) / 2
-    d["best_total"] = best_total
-    d["label"] = label_vs_you(best_total, your_total) if your_total else "Unknown"
-    return d
+    total = d.get("total") or d.get("estimate_total") or 0
+    label = d.get("label") or user_label(total, your_total)
+    return {
+        "user_id": int(d.get("user_id") or d.get("target_id") or 0),
+        "name": d.get("name") or d.get("target_name") or "",
+        "faction_id": d.get("faction_id") or d.get("target_faction_id"),
+        "total": round(float(total or 0)),
+        "best_total": round(float(total or 0)),
+        "range_low": round(float(d.get("range_low") or (float(total or 0) * .88))),
+        "range_high": round(float(d.get("range_high") or (float(total or 0) * 1.12))),
+        "label": label,
+        "confidence": float(d.get("confidence") or 0),
+        "source": d.get("source") or "none",
+        "source_detail": d.get("source_detail") or "",
+        "updated_at": d.get("updated_at") or d.get("created_at") or 0,
+    }
 
+def store_enemy(user_id, name, total, your_total=0, faction_id=None, confidence=50, source="manual", detail=""):
+    user_id = int(user_id or 0)
+    total = clean_num(total)
+    if not user_id or not total:
+        return None
+    label = user_label(total, your_total)
+    ts = now_ts()
+    low, high = total * .88, total * 1.12
+    with db() as con:
+        old = con.execute("SELECT confidence FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
+        old_conf = float(old["confidence"] or 0) if old else 0
+        # Stronger intel wins; single-fight estimates can fill blanks but not overwrite better data.
+        if confidence >= old_conf or old_conf < 45:
+            con.execute("""
+            INSERT INTO enemy_stats
+            (user_id,name,faction_id,total,range_low,range_high,label,confidence,source,source_detail,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(user_id) DO UPDATE SET
+              name=COALESCE(excluded.name, enemy_stats.name),
+              faction_id=COALESCE(excluded.faction_id, enemy_stats.faction_id),
+              total=excluded.total,
+              range_low=excluded.range_low,
+              range_high=excluded.range_high,
+              label=excluded.label,
+              confidence=excluded.confidence,
+              source=excluded.source,
+              source_detail=excluded.source_detail,
+              updated_at=excluded.updated_at
+            """, (user_id, name, faction_id, total, low, high, label, confidence, source, detail, ts))
+        row = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
+    return normalize(row, your_total)
 
-def require_json(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if not request.is_json:
-            return jsonify({"ok": False, "error": "JSON body required"}), 400
-        return f(*args, **kwargs)
-    return wrapper
+def torn_get(api_key, selection):
+    # Torn v1 style works broadly and is stable for limited key.
+    url = f"https://api.torn.com/user/?selections={selection}&key={api_key}"
+    r = requests.get(url, timeout=20, headers={"User-Agent": APP_NAME})
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    return data
 
+@app.get("/")
+def index():
+    return jsonify({"ok": True, "app": APP_NAME})
 
-def torn_request(api_key, endpoint, selections):
-    url = f"{TORN_API_BASE}/{endpoint}/"
-    params = {"selections": selections, "key": api_key}
-    r = requests.get(url, params=params, timeout=25)
-    try:
-        return r.json()
-    except Exception:
-        return {"error": {"error": "Bad response from Torn"}}
-
+@app.get("/static/<path:path>")
+def static_file(path):
+    return send_from_directory("static", path)
 
 @app.post("/api/login")
-@require_json
 def login():
     body = request.get_json(force=True)
-    api_key = body.get("api_key", "").strip()
-    if not api_key:
-        return jsonify({"ok": False, "error": "Missing Torn API key"}), 400
-
-    data = torn_request(api_key, "user", "basic,profile,battlestats")
-    if data.get("error"):
-        return jsonify({"ok": False, "error": data.get("error")}), 401
-
-    user_id = int(data.get("player_id") or data.get("user_id") or data.get("ID") or 0)
-    name = data.get("name") or "Unknown"
+    key = (body.get("api_key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "Missing api_key"}), 400
+    try:
+        data = torn_get(key, "profile,battlestats")
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    uid = int(data.get("player_id") or data.get("user_id") or 0)
+    name = data.get("name") or ""
     faction = data.get("faction") or {}
-    faction_id = faction.get("faction_id") or faction.get("id") or 0
-    faction_name = faction.get("faction_name") or faction.get("name") or ""
-
-    battle_stats = extract_battle_stats(data)
-
+    fid = faction.get("faction_id") or faction.get("id") or data.get("faction_id")
+    fname = faction.get("faction_name") or faction.get("name") or ""
+    stats = {k: clean_num(data.get(k)) for k in ["strength","defense","speed","dexterity"]}
+    total = sum(stats.values())
     with db() as con:
-        con.execute(
-            """
-            INSERT INTO users (user_id, name, faction_id, faction_name, api_key_hash, created_at, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-              name=excluded.name,
-              faction_id=excluded.faction_id,
-              faction_name=excluded.faction_name,
-              api_key_hash=excluded.api_key_hash,
-              last_seen=excluded.last_seen
-            """,
-            (user_id, name, faction_id, faction_name, hash_key(api_key), now_ts(), now_ts()),
-        )
-
-    return jsonify({
-        "ok": True,
-        "user": {
-            "user_id": user_id,
-            "name": name,
-            "faction_id": faction_id,
-            "faction_name": faction_name,
-            "is_admin": user_id in ADMIN_USER_IDS,
-            "battle_stats": battle_stats,
-        }
-    })
-
-
-@app.post("/api/settings/integrations")
-@require_json
-def save_integrations():
-    body = request.get_json(force=True)
-    user_id = int(body.get("user_id") or 0)
-    if not user_id:
-        return jsonify({"ok": False, "error": "Missing user_id"}), 400
-
-    with db() as con:
-        con.execute(
-            """
-            UPDATE users SET tornstats_key=?, yata_key=?, share_attack_learning=?, share_spies=?, last_seen=?
-            WHERE user_id=?
-            """,
-            (
-                body.get("tornstats_key") or None,
-                body.get("yata_key") or None,
-                1 if body.get("share_attack_learning", True) else 0,
-                1 if body.get("share_spies", True) else 0,
-                now_ts(),
-                user_id,
-            ),
-        )
-    return jsonify({"ok": True})
-
-
-def find_active_enemy_faction(api_key):
-    data = torn_request(api_key, "faction", "basic,rankedwars")
-    if data.get("error"):
-        return None, data.get("error")
-
-    own_id = int(data.get("ID") or data.get("faction_id") or 0)
-    ranked = data.get("rankedwars") or data.get("ranked_wars") or {}
-    enemy_id = None
-
-    if isinstance(ranked, dict):
-        for _, war in ranked.items():
-            factions = war.get("factions") or {}
-            for fid in factions.keys():
-                try:
-                    fid_int = int(fid)
-                except Exception:
-                    continue
-                if fid_int != own_id:
-                    enemy_id = fid_int
-                    break
-            if enemy_id:
-                break
-
-    return enemy_id, None
-
-
-def fetch_faction_members(api_key, faction_id):
-    data = torn_request(api_key, f"faction/{faction_id}", "basic")
-    if data.get("error"):
-        return [], data.get("error")
-
-    members = data.get("members") or {}
-    rows = []
-    for uid, m in members.items():
-        rows.append({
-            "user_id": int(uid),
-            "name": m.get("name", "Unknown"),
-            "level": m.get("level"),
-            "status": m.get("status", {}).get("description") if isinstance(m.get("status"), dict) else m.get("status"),
-            "last_action": m.get("last_action", {}).get("relative") if isinstance(m.get("last_action"), dict) else None,
-            "faction_id": faction_id,
-        })
-    return rows, None
-
-
-@app.post("/api/war/enemy-scan")
-@require_json
-def enemy_scan():
-    body = request.get_json(force=True)
-    api_key = body.get("api_key", "").strip()
-    your_total = clean_num(body.get("your_total"))
-    enemy_faction_id = body.get("enemy_faction_id")
-
-    if not api_key:
-        return jsonify({"ok": False, "error": "Missing api_key"}), 400
-
-    if not enemy_faction_id:
-        enemy_faction_id, err = find_active_enemy_faction(api_key)
-        if err:
-            return jsonify({"ok": False, "error": err}), 400
-    if not enemy_faction_id:
-        return jsonify({"ok": False, "error": "No active enemy faction detected. Enter enemy faction ID manually."}), 404
-
-    members, err = fetch_faction_members(api_key, int(enemy_faction_id))
-    if err:
-        return jsonify({"ok": False, "error": err}), 400
-
-    ids = [m["user_id"] for m in members]
-    known = {}
-    with db() as con:
-        if ids:
-            placeholders = ",".join("?" for _ in ids)
-            rows = con.execute(f"SELECT * FROM enemy_stats WHERE user_id IN ({placeholders})", ids).fetchall()
-            known = {int(r["user_id"]): normalize_enemy_row(r, your_total) for r in rows}
-
-    final = []
-    for m in members:
-        intel = known.get(m["user_id"])
-        m["intel"] = intel if intel else {"label": "Unknown", "confidence": 0, "source": "none"}
-        final.append(m)
-
-    order = {"Easy": 1, "Fair": 2, "Good": 3, "Unknown": 4, "Difficult": 5, "Avoid": 6}
-    final.sort(key=lambda x: (order.get(x.get("intel", {}).get("label"), 9), -(x.get("intel", {}).get("confidence") or 0)))
-
-    with db() as con:
-        con.execute(
-            "INSERT INTO scan_cache (faction_id, enemy_faction_id, payload, created_at) VALUES (?, ?, ?, ?)",
-            (body.get("faction_id"), int(enemy_faction_id), json.dumps(final), now_ts()),
-        )
-
-    return jsonify({"ok": True, "enemy_faction_id": int(enemy_faction_id), "members": final})
-
-
-def upsert_enemy_from_source(target_id, name, faction_id, strength, defense, speed, dexterity, source, source_detail, confidence, submitted_by=None):
-    strength = clean_num(strength)
-    defense = clean_num(defense)
-    speed = clean_num(speed)
-    dexterity = clean_num(dexterity)
-    total = total_stats(strength, defense, speed, dexterity)
-    if not total:
-        return False, "Need all four battle stats"
-
-    build_shape = detect_build_shape(strength, defense, speed, dexterity)
-    range_low = total * 0.95
-    range_high = total * 1.05
-    ts = now_ts()
-
-    with db() as con:
-        con.execute(
-            """
-            INSERT INTO spy_reports
-            (target_id, target_name, target_faction_id, strength, defense, speed, dexterity, total, source, source_detail, submitted_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (target_id, name, faction_id, strength, defense, speed, dexterity, total, source, source_detail, submitted_by, ts),
-        )
-        old = con.execute("SELECT confidence FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-        old_conf = old["confidence"] if old else 0
-        if confidence >= old_conf:
-            con.execute(
-                """
-                INSERT INTO enemy_stats
-                (user_id, name, faction_id, strength, defense, speed, dexterity, total, range_low, range_high, build_shape, confidence, source, source_detail, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  name=excluded.name,
-                  faction_id=excluded.faction_id,
-                  strength=excluded.strength,
-                  defense=excluded.defense,
-                  speed=excluded.speed,
-                  dexterity=excluded.dexterity,
-                  total=excluded.total,
-                  range_low=excluded.range_low,
-                  range_high=excluded.range_high,
-                  build_shape=excluded.build_shape,
-                  confidence=excluded.confidence,
-                  source=excluded.source,
-                  source_detail=excluded.source_detail,
-                  updated_at=excluded.updated_at
-                """,
-                (target_id, name, faction_id, strength, defense, speed, dexterity, total, range_low, range_high, build_shape, confidence, source, source_detail, ts),
-            )
-    return True, None
-
-
-@app.post("/api/spy/manual")
-@require_json
-def manual_spy():
-    body = request.get_json(force=True)
-    target_id = int(body.get("target_id") or 0)
-    if not target_id:
-        return jsonify({"ok": False, "error": "Missing target_id"}), 400
-
-    ok, err = upsert_enemy_from_source(
-        target_id=target_id,
-        name=body.get("target_name") or "Unknown",
-        faction_id=int(body.get("target_faction_id") or 0),
-        strength=body.get("strength"),
-        defense=body.get("defense"),
-        speed=body.get("speed"),
-        dexterity=body.get("dexterity"),
-        source=body.get("source") or "manual_spy",
-        source_detail=body.get("source_detail") or "Manual spy entry",
-        confidence=source_weight(body.get("source") or "manual_spy"),
-        submitted_by=body.get("submitted_by"),
-    )
-    if not ok:
-        return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True})
-
-
-def store_external_estimate(target_id, target_name, target_faction_id, est, low=None, high=None, source="ffscouter", source_detail="", confidence=58, submitted_by=None):
-    target_id = int(target_id or 0)
-    est = clean_num(est)
-    if not target_id or not est:
-        return False
-
-    low = clean_num(low) or (est * 0.82)
-    high = clean_num(high) or (est * 1.22)
-    ts = now_ts()
-
-    with db() as con:
-        con.execute(
-            """
-            INSERT INTO external_estimates
-            (target_id, target_name, target_faction_id, estimate_total, range_low, range_high, source, source_detail, confidence, submitted_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (target_id, target_name, target_faction_id, est, low, high, source, source_detail, confidence, submitted_by, ts),
-        )
-
-        old = con.execute("SELECT confidence FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-        old_conf = old["confidence"] if old else 0
-
-        # FF base is a starting point. It should fill blanks or replace weak/local estimates,
-        # but not overwrite spies or strong learned predictions.
-        if confidence >= old_conf or old_conf < 60:
-            con.execute(
-                """
-                INSERT INTO enemy_stats
-                (user_id, name, faction_id, total, range_low, range_high, build_shape, confidence, source, source_detail, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  name=COALESCE(excluded.name, enemy_stats.name),
-                  faction_id=COALESCE(excluded.faction_id, enemy_stats.faction_id),
-                  total=excluded.total,
-                  range_low=excluded.range_low,
-                  range_high=excluded.range_high,
-                  build_shape='unknown',
-                  confidence=CASE WHEN enemy_stats.confidence < 60 THEN excluded.confidence ELSE enemy_stats.confidence END,
-                  source=CASE WHEN enemy_stats.confidence < 60 THEN excluded.source ELSE enemy_stats.source END,
-                  source_detail=CASE WHEN enemy_stats.confidence < 60 THEN excluded.source_detail ELSE enemy_stats.source_detail END,
-                  updated_at=excluded.updated_at
-                """,
-                (target_id, target_name, target_faction_id, est, low, high, "unknown", confidence, source, source_detail, ts),
-            )
-    return True
-
-
-def parse_ffscouter_payload(payload):
-    """Accept several possible FF-style response shapes and return {target_id: row}."""
-    if not isinstance(payload, (dict, list)):
-        return {}
-
-    if isinstance(payload, list):
-        items = payload
-    else:
-        data = payload.get("data")
-        if data is None:
-            data = payload.get("stats") or payload.get("targets") or payload.get("results") or payload.get("players") or payload
-        if isinstance(data, dict):
-            # Could be keyed by player id.
-            items = []
-            for k, v in data.items():
-                if isinstance(v, dict):
-                    v = dict(v)
-                    v.setdefault("target_id", k)
-                    items.append(v)
-        elif isinstance(data, list):
-            items = data
-        else:
-            items = []
-
-    out = {}
-    for row in items:
-        if not isinstance(row, dict):
-            continue
-        tid = row.get("target_id") or row.get("user_id") or row.get("player_id") or row.get("id") or row.get("XID")
-        try:
-            tid = int(tid)
-        except Exception:
-            continue
-
-        est = (
-            row.get("bs_estimate")
-            or row.get("battle_stats_estimate")
-            or row.get("estimated_stats")
-            or row.get("estimate")
-            or row.get("estimated_total")
-            or row.get("total")
-            or row.get("bs")
-        )
-        est = clean_num(est)
-        if not est:
-            continue
-
-        out[tid] = {
-            "target_id": tid,
-            "estimate_total": est,
-            "human": row.get("bs_estimate_human") or row.get("estimate_human") or row.get("human") or "",
-            "fair_fight": row.get("fair_fight") or row.get("ff") or row.get("fairfight") or "",
-            "last_updated": row.get("last_updated") or row.get("updated_at") or row.get("age") or "",
-            "raw": row,
-        }
-    return out
-
-
-def fetch_ffscouter_estimates(api_key, target_ids):
-    if not FF_SCOUTER_API_BASE:
-        return {}, "FF_SCOUTER_API_BASE is not configured"
-
-    base = FF_SCOUTER_API_BASE.rstrip("/")
-    targets = ",".join(str(int(x)) for x in target_ids if str(x).isdigit())
-    if not targets:
-        return {}, "No targets"
-
-    # Keep this configurable/flexible because FF deployments have used different paths.
-    paths = [
-        "/api/v1/get-stats",
-        "/api/get-stats",
-        "/api/stats",
-    ]
-    last_err = None
-
-    for path in paths:
-        try:
-            r = requests.get(
-                base + path,
-                params={"key": api_key, "targets": targets},
-                headers={"User-Agent": "EnhancedBattleStatFinder/1.3.3"},
-                timeout=20,
-            )
-            if r.status_code >= 400:
-                last_err = f"{path} HTTP {r.status_code}"
-                continue
-            payload = r.json()
-            parsed = parse_ffscouter_payload(payload)
-            if parsed:
-                return parsed, None
-            last_err = f"{path} returned no usable estimates"
-        except Exception as e:
-            last_err = str(e)
-    return {}, last_err or "FF Scouter lookup failed"
-
-
-@app.post("/api/ffscouter/base-import")
-@require_json
-def ffscouter_base_import():
-    body = request.get_json(force=True)
-    api_key = (body.get("api_key") or "").strip()
-    if not api_key:
-        return jsonify({"ok": False, "error": "Missing api_key"}), 400
-
-    targets = body.get("targets") or []
-    if not isinstance(targets, list):
-        return jsonify({"ok": False, "error": "targets must be a list"}), 400
-
-    target_map = {}
-    ids = []
-    for t in targets[:120]:
-        if isinstance(t, dict):
-            tid = int(t.get("user_id") or t.get("target_id") or t.get("id") or 0)
-            if tid:
-                ids.append(tid)
-                target_map[tid] = t
-        else:
-            try:
-                tid = int(t)
-                ids.append(tid)
-                target_map[tid] = {"user_id": tid}
-            except Exception:
-                pass
-
-    if not ids:
-        return jsonify({"ok": False, "error": "No target IDs supplied"}), 400
-
-    estimates, err = fetch_ffscouter_estimates(api_key, ids)
-    imported = []
-    submitted_by = body.get("submitted_by")
-    target_faction_id = body.get("target_faction_id")
-
-    for tid, row in estimates.items():
-        t = target_map.get(tid, {})
-        name = t.get("name") or t.get("target_name") or None
-        detail_bits = ["FF Scouter base estimate"]
-        if row.get("human"):
-            detail_bits.append(str(row["human"]))
-        if row.get("fair_fight"):
-            detail_bits.append(f"FF {row['fair_fight']}")
-        if row.get("last_updated"):
-            detail_bits.append(f"updated {row['last_updated']}")
-
-        ok = store_external_estimate(
-            target_id=tid,
-            target_name=name,
-            target_faction_id=target_faction_id or t.get("faction_id"),
-            est=row["estimate_total"],
-            source="ffscouter",
-            source_detail=" • ".join(detail_bits),
-            confidence=float(body.get("confidence") or 58),
-            submitted_by=submitted_by,
-        )
-        if ok:
-            imported.append(tid)
-
-    your_total = clean_num(body.get("your_total"))
-    predictions = []
-    if imported:
-        with db() as con:
-            placeholders = ",".join("?" for _ in imported)
-            rows = con.execute(f"SELECT * FROM enemy_stats WHERE user_id IN ({placeholders})", imported).fetchall()
-            predictions = [normalize_enemy_row(r, your_total) for r in rows]
-
-    return jsonify({
-        "ok": True,
-        "imported": len(imported),
-        "predictions": predictions,
-        "warning": err if not imported else None,
-    })
-
-
-
-@app.post("/api/estimate/manual")
-@require_json
-def manual_estimate():
-    body = request.get_json(force=True)
-    target_id = int(body.get("target_id") or 0)
-    if not target_id:
-        return jsonify({"ok": False, "error": "Missing target_id"}), 400
-
-    source = body.get("source") or "bsp"
-    est = clean_num(body.get("estimate_total"))
-    low = clean_num(body.get("range_low")) or (est * 0.85 if est else None)
-    high = clean_num(body.get("range_high")) or (est * 1.15 if est else None)
-    if not est and not (low and high):
-        return jsonify({"ok": False, "error": "Need estimate_total or range_low/range_high"}), 400
-
-    conf = float(body.get("confidence") or source_weight(source))
-    with db() as con:
-        con.execute(
-            """
-            INSERT INTO external_estimates
-            (target_id, target_name, target_faction_id, estimate_total, range_low, range_high, source, source_detail, confidence, submitted_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (target_id, body.get("target_name"), body.get("target_faction_id"), est, low, high, source, body.get("source_detail"), conf, body.get("submitted_by"), now_ts()),
-        )
-        old = con.execute("SELECT confidence FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-        old_conf = old["confidence"] if old else 0
-        if conf >= old_conf:
-            con.execute(
-                """
-                INSERT INTO enemy_stats
-                (user_id, name, faction_id, total, range_low, range_high, build_shape, confidence, source, source_detail, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  name=COALESCE(excluded.name, enemy_stats.name),
-                  faction_id=COALESCE(excluded.faction_id, enemy_stats.faction_id),
-                  total=excluded.total,
-                  range_low=excluded.range_low,
-                  range_high=excluded.range_high,
-                  build_shape='unknown',
-                  confidence=excluded.confidence,
-                  source=excluded.source,
-                  source_detail=excluded.source_detail,
-                  updated_at=excluded.updated_at
-                """,
-                (target_id, body.get("target_name"), body.get("target_faction_id"), est or ((low + high) / 2), low, high, "unknown", conf, source, body.get("source_detail"), now_ts()),
-            )
-    return jsonify({"ok": True})
-
-
-def normalize_spy_payload(payload):
-    data = payload.get("spy") or payload.get("spy_data") or payload.get("data") or payload
-    if isinstance(data, list) and data:
-        data = data[0]
-    if not isinstance(data, dict):
-        return None
-    return {
-        "strength": data.get("strength") or data.get("str"),
-        "defense": data.get("defense") or data.get("def"),
-        "speed": data.get("speed") or data.get("spd"),
-        "dexterity": data.get("dexterity") or data.get("dex"),
-        "target_name": data.get("name") or data.get("target_name"),
-        "target_faction_id": data.get("faction_id"),
-        "timestamp": data.get("timestamp") or data.get("updated") or data.get("updated_at"),
-    }
-
-
-@app.post("/api/integrations/tornstats/import-user")
-@require_json
-def tornstats_import_user():
-    body = request.get_json(force=True)
-    key = body.get("tornstats_key") or ""
-    target_id = int(body.get("target_id") or 0)
-    if not key or not target_id:
-        return jsonify({"ok": False, "error": "Missing TornStats key or target_id"}), 400
-
-    url = f"{TORNSTATS_API_BASE}/{key}/spy/user/{target_id}"
-    data = requests.get(url, timeout=25).json()
-    spy = normalize_spy_payload(data)
-    if not spy:
-        return jsonify({"ok": False, "error": "No spy data returned", "raw": data}), 404
-
-    ok, err = upsert_enemy_from_source(
-        target_id=target_id,
-        name=spy.get("target_name") or body.get("target_name") or "Unknown",
-        faction_id=int(spy.get("target_faction_id") or body.get("target_faction_id") or 0),
-        strength=spy.get("strength"),
-        defense=spy.get("defense"),
-        speed=spy.get("speed"),
-        dexterity=spy.get("dexterity"),
-        source="tornstats",
-        source_detail="TornStats user spy import",
-        confidence=source_weight("tornstats"),
-        submitted_by=body.get("submitted_by"),
-    )
-    if not ok:
-        return jsonify({"ok": False, "error": err, "raw": data}), 400
-    return jsonify({"ok": True, "spy": spy})
-
-
-@app.post("/api/integrations/yata/import-user")
-@require_json
-def yata_import_user():
-    body = request.get_json(force=True)
-    key = body.get("yata_key") or ""
-    target_id = int(body.get("target_id") or 0)
-
-    if not YATA_API_BASE:
-        return jsonify({"ok": False, "error": "YATA_API_BASE is not configured yet"}), 400
-    if not key or not target_id:
-        return jsonify({"ok": False, "error": "Missing YATA key or target_id"}), 400
-
-    url = YATA_API_BASE.replace("{key}", key).replace("{target_id}", str(target_id))
-    data = requests.get(url, timeout=25).json()
-    spy = normalize_spy_payload(data)
-    if not spy:
-        return jsonify({"ok": False, "error": "No YATA spy data recognized", "raw": data}), 404
-
-    ok, err = upsert_enemy_from_source(
-        target_id=target_id,
-        name=spy.get("target_name") or body.get("target_name") or "Unknown",
-        faction_id=int(spy.get("target_faction_id") or body.get("target_faction_id") or 0),
-        strength=spy.get("strength"),
-        defense=spy.get("defense"),
-        speed=spy.get("speed"),
-        dexterity=spy.get("dexterity"),
-        source="yata",
-        source_detail="YATA user spy import",
-        confidence=source_weight("yata"),
-        submitted_by=body.get("submitted_by"),
-    )
-    if not ok:
-        return jsonify({"ok": False, "error": err, "raw": data}), 400
-    return jsonify({"ok": True, "spy": spy})
-
-
-@app.post("/api/attack/result")
-@require_json
-def attack_result():
-    body = request.get_json(force=True)
-    attacker_id = int(body.get("attacker_id") or 0)
-    target_id = int(body.get("target_id") or 0)
-    result = body.get("result")
-
-    if not attacker_id or not target_id or result not in {"easy_win", "close_win", "close_loss", "hard_loss", "could_not_hit", "auto_win", "auto_loss", "generic_win", "generic_loss"}:
-        return jsonify({"ok": False, "error": "Missing attacker_id, target_id, or valid result"}), 400
-
-    with db() as con:
-        con.execute(
-            """
-            INSERT INTO attack_learning
-            (attacker_id, attacker_name, attacker_total, target_id, target_name, result, confidence_weight, note, fight_meta, detected_confidence, result_source, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                attacker_id,
-                body.get("attacker_name"),
-                clean_num(body.get("attacker_total")),
-                target_id,
-                body.get("target_name"),
-                result,
-                float(body.get("confidence_weight") or 1),
-                body.get("note"),
-                json.dumps(body.get("fight_meta") or {}, separators=(",", ":")),
-                float(body.get("detected_confidence") or 50),
-                body.get("result_source") or "auto",
-                now_ts(),
-            ),
-        )
-
-    recalc_learning(target_id)
-    return jsonify({"ok": True})
-
-
-def recalc_learning(target_id):
-    with db() as con:
-        rows = con.execute(
-            "SELECT * FROM attack_learning WHERE target_id=? AND attacker_total IS NOT NULL ORDER BY created_at DESC LIMIT 50",
-            (target_id,),
-        ).fetchall()
-        if not rows:
-            return
-
-        lows = []
-        highs = []
-        for r in rows:
-            t = clean_num(r["attacker_total"])
-            if not t:
-                continue
-
-            if r["result"] == "easy_win":
-                highs.append(t * 0.85)
-            elif r["result"] in ("close_win", "generic_win", "auto_win"):
-                lows.append(t * 0.75)
-                highs.append(t * 1.08)
-            elif r["result"] in ("close_loss", "generic_loss", "auto_loss"):
-                lows.append(t * 0.95)
-                highs.append(t * 1.35)
-            elif r["result"] == "hard_loss":
-                lows.append(t * 1.20)
-
-        if not lows and not highs:
-            return
-
-        old = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-        old_conf = old["confidence"] if old else 0
-
-        learned_low = max(lows) if lows else (old["range_low"] if old and old["range_low"] else None)
-        learned_high = min(highs) if highs else (old["range_high"] if old and old["range_high"] else None)
-
-        if learned_low and learned_high and learned_low > learned_high:
-            learned_high = learned_low * 1.25
-        if not learned_low and learned_high:
-            learned_low = learned_high * 0.55
-        if learned_low and not learned_high:
-            learned_high = learned_low * 1.60
-
-        if not learned_low or not learned_high:
-            return
-
-        total = (learned_low + learned_high) / 2
-        conf = min(88, 45 + len(rows) * 6)
-
-        if conf >= old_conf or (old and old["source"] in ("estimate", "attack_learning", None)):
-            con.execute(
-                """
-                INSERT INTO enemy_stats
-                (user_id, name, total, range_low, range_high, build_shape, confidence, source, source_detail, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                  total=excluded.total,
-                  range_low=excluded.range_low,
-                  range_high=excluded.range_high,
-                  confidence=excluded.confidence,
-                  source=excluded.source,
-                  source_detail=excluded.source_detail,
-                  updated_at=excluded.updated_at
-                """,
-                (target_id, rows[0]["target_name"], total, learned_low, learned_high, "unknown", conf, "attack_learning", f"{len(rows)} attack reports", now_ts()),
-            )
-
-
-@app.get("/api/enemy/<int:target_id>/intel")
-def enemy_intel(target_id):
-    your_total = clean_num(request.args.get("your_total"))
-    with db() as con:
-        stat = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-        spies = con.execute("SELECT * FROM spy_reports WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
-        estimates = con.execute("SELECT * FROM external_estimates WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
-        learning = con.execute("SELECT * FROM attack_learning WHERE target_id=? ORDER BY created_at DESC LIMIT 20", (target_id,)).fetchall()
-
-    return jsonify({
-        "ok": True,
-        "enemy": normalize_enemy_row(stat, your_total) if stat else None,
-        "spies": [dict(x) for x in spies],
-        "estimates": [dict(x) for x in estimates],
-        "learning": [dict(x) for x in learning],
-    })
-
-
-@app.get("/api/learning/last/<int:target_id>")
-def learning_last(target_id):
-    with db() as con:
-        rows = con.execute(
-            "SELECT * FROM attack_learning WHERE target_id=? ORDER BY created_at DESC LIMIT 5",
-            (target_id,),
-        ).fetchall()
-        stat = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-    return jsonify({"ok": True, "rows": [dict(x) for x in rows], "stat": dict(stat) if stat else None})
-
-@app.get("/api/learning/recent")
-def recent_learning():
-    user_id = int(request.args.get("user_id") or 0)
-    if not user_id:
-        return jsonify({"ok": False, "error": "Missing user_id"}), 400
-
-    with db() as con:
-        rows = con.execute(
-            """
-            SELECT target_id, target_name, result, created_at
-            FROM attack_learning
-            WHERE attacker_id=?
-            ORDER BY created_at DESC
-            LIMIT 12
-            """,
-            (user_id,),
-        ).fetchall()
-
-    return jsonify({"ok": True, "recent": [dict(x) for x in rows]})
+        con.execute("""
+        INSERT INTO users(user_id,name,faction_id,faction_name,total,str_stat,def_stat,spd_stat,dex_stat,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          name=excluded.name,faction_id=excluded.faction_id,faction_name=excluded.faction_name,total=excluded.total,
+          str_stat=excluded.str_stat,def_stat=excluded.def_stat,spd_stat=excluded.spd_stat,dex_stat=excluded.dex_stat,updated_at=excluded.updated_at
+        """, (uid,name,fid,fname,total,stats["strength"],stats["defense"],stats["speed"],stats["dexterity"],now_ts()))
+    return jsonify({"ok": True, "user": {"user_id": uid, "name": name, "faction_id": fid, "faction_name": fname}, "stats": {"total": round(total), **{k: round(v) for k,v in stats.items()}}})
 
 @app.get("/api/player/<int:target_id>/intel")
 def player_intel(target_id):
     your_total = clean_num(request.args.get("your_total"))
     with db() as con:
-        stat = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
-        spies = con.execute("SELECT * FROM spy_reports WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
-        estimates = con.execute("SELECT * FROM external_estimates WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
-        learning = con.execute("SELECT * FROM attack_learning WHERE target_id=? ORDER BY created_at DESC LIMIT 20", (target_id,)).fetchall()
+        row = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
+        learning = con.execute("SELECT * FROM attack_learning WHERE target_id=? ORDER BY created_at DESC LIMIT 10", (target_id,)).fetchall()
+    return jsonify({"ok": True, "player": normalize(row, your_total) if row else None, "learning": [dict(x) for x in learning]})
 
-    return jsonify({
-        "ok": True,
-        "player": normalize_enemy_row(stat, your_total) if stat else None,
-        "spies": [dict(x) for x in spies],
-        "estimates": [dict(x) for x in estimates],
-        "learning": [dict(x) for x in learning],
-    })
+@app.post("/api/intel/bulk")
+def intel_bulk():
+    body = request.get_json(force=True)
+    ids = [int(x) for x in body.get("ids", []) if str(x).isdigit()]
+    your_total = clean_num(body.get("your_total"))
+    out = {}
+    if ids:
+        with db() as con:
+            q = ",".join("?" for _ in ids[:200])
+            for row in con.execute(f"SELECT * FROM enemy_stats WHERE user_id IN ({q})", ids[:200]).fetchall():
+                out[str(row["user_id"])] = normalize(row, your_total)
+    return jsonify({"ok": True, "intel": out})
 
-@app.get("/api/admin/intel-summary")
-def intel_summary():
-    admin_id = int(request.args.get("admin_id") or 0)
-    if admin_id not in ADMIN_USER_IDS:
-        return jsonify({"ok": False, "error": "Admin only"}), 403
+@app.post("/api/estimate/manual")
+def estimate_manual():
+    body = request.get_json(force=True)
+    p = store_enemy(
+        body.get("target_id"), body.get("target_name"), body.get("estimate_total"),
+        body.get("your_total"), body.get("target_faction_id"), body.get("confidence") or 70,
+        body.get("source") or "manual", body.get("source_detail") or "manual/import"
+    )
+    return jsonify({"ok": bool(p), "player": p})
 
+def estimate_from_fight(attacker_total, result):
+    t = clean_num(attacker_total)
+    result = str(result or "")
+    if not t:
+        return None
+    if result == "easy_win":
+        low, high, conf = t*.05, t*.70, 42
+    elif result in ("close_win",):
+        low, high, conf = t*.75, t*1.05, 48
+    elif result in ("generic_win","auto_win"):
+        low, high, conf = t*.55, t*1.00, 42
+    elif result in ("close_loss",):
+        low, high, conf = t*.95, t*1.25, 48
+    elif result in ("generic_loss","auto_loss"):
+        low, high, conf = t*1.00, t*1.55, 42
+    elif result == "hard_loss":
+        low, high, conf = t*1.35, t*2.20, 45
+    else:
+        low, high, conf = t*.75, t*1.25, 35
+    return ((low+high)/2, low, high, conf)
+
+@app.post("/api/attack/result")
+def attack_result():
+    body = request.get_json(force=True)
+    attacker_id = int(body.get("attacker_id") or 0)
+    target_id = int(body.get("target_id") or 0)
+    result = body.get("result") or "generic_win"
+    attacker_total = clean_num(body.get("attacker_total"))
+    target_name = body.get("target_name") or "Enemy"
+    if not attacker_id or not target_id or not attacker_total:
+        return jsonify({"ok": False, "error": "Missing attacker_id, target_id, or attacker_total"}), 400
+    ts = now_ts()
     with db() as con:
-        users = con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
-        enemies = con.execute("SELECT COUNT(*) c FROM enemy_stats").fetchone()["c"]
-        spies = con.execute("SELECT COUNT(*) c FROM spy_reports").fetchone()["c"]
-        attacks = con.execute("SELECT COUNT(*) c FROM attack_learning").fetchone()["c"]
-        top = con.execute("SELECT * FROM enemy_stats ORDER BY confidence DESC, updated_at DESC LIMIT 30").fetchall()
+        con.execute("""
+        INSERT INTO attack_learning(attacker_id,attacker_name,attacker_total,target_id,target_name,result,fight_meta,created_at)
+        VALUES(?,?,?,?,?,?,?,?)
+        """, (attacker_id, body.get("attacker_name"), attacker_total, target_id, target_name, result, json.dumps(body.get("fight_meta") or {}), ts))
+    est = estimate_from_fight(attacker_total, result)
+    player = None
+    if est:
+        total, low, high, conf = est
+        player = store_enemy(target_id, target_name, total, attacker_total, None, conf, "fight_learning", f"single fight: {result}")
+    return jsonify({"ok": True, "player": player})
 
-    return jsonify({
-        "ok": True,
-        "counts": {"users": users, "enemies": enemies, "spies": spies, "attacks": attacks},
-        "top": [dict(x) for x in top],
-    })
+def parse_ff_payload(payload):
+    if isinstance(payload, dict):
+        data = payload.get("data") or payload.get("stats") or payload.get("targets") or payload.get("results") or payload
+        if isinstance(data, dict):
+            rows = []
+            for k,v in data.items():
+                if isinstance(v, dict):
+                    vv = dict(v); vv.setdefault("target_id", k); rows.append(vv)
+        elif isinstance(data, list):
+            rows = data
+        else:
+            rows = []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+    out = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        tid = r.get("target_id") or r.get("user_id") or r.get("player_id") or r.get("id") or r.get("XID")
+        est = r.get("bs_estimate") or r.get("battle_stats_estimate") or r.get("estimated_stats") or r.get("estimate") or r.get("total")
+        tid, est = int(clean_num(tid)), clean_num(est)
+        if tid and est:
+            out[tid] = {"total": est, "detail": r.get("bs_estimate_human") or "FF Scouter base"}
+    return out
 
+@app.post("/api/ffscouter/base-import")
+def ff_import():
+    body = request.get_json(force=True)
+    api_key = (body.get("api_key") or "").strip()
+    targets = body.get("targets") or []
+    ids = []
+    names = {}
+    for t in targets[:120]:
+        if isinstance(t, dict):
+            tid = int(t.get("user_id") or t.get("target_id") or t.get("id") or 0)
+            if tid:
+                ids.append(tid); names[tid] = t.get("name") or t.get("target_name")
+        else:
+            try: ids.append(int(t))
+            except Exception: pass
+    if not api_key or not ids:
+        return jsonify({"ok": False, "error": "Missing api_key or target ids"}), 400
+    target_str = ",".join(map(str, ids))
+    parsed, warning = {}, None
+    for path in ["/api/v1/get-stats","/api/get-stats","/api/stats"]:
+        try:
+            r = requests.get(FF_SCOUTER_API_BASE + path, params={"key": api_key, "targets": target_str}, timeout=20)
+            if r.status_code >= 400:
+                warning = f"{path} HTTP {r.status_code}"; continue
+            parsed = parse_ff_payload(r.json())
+            if parsed: break
+        except Exception as e:
+            warning = str(e)
+    preds = []
+    your_total = clean_num(body.get("your_total"))
+    for tid,row in parsed.items():
+        p = store_enemy(tid, names.get(tid), row["total"], your_total, body.get("target_faction_id"), 58, "ffscouter", row["detail"])
+        if p: preds.append(p)
+    return jsonify({"ok": True, "imported": len(preds), "predictions": preds, "warning": warning})
 
-@app.get("/")
-def home():
-    script = f"{PUBLIC_BASE_URL}/static/enhanced-battle-stat-finder.user.js" if PUBLIC_BASE_URL else "/static/enhanced-battle-stat-finder.user.js"
-    return jsonify({"ok": True, "app": APP_NAME, "status": "running", "script": script})
-
-
-@app.get("/health")
-def health():
-    return jsonify({"ok": True, "time": now_ts()})
-
-
-@app.get("/static/<path:filename>")
-def static_files(filename):
-    return send_from_directory("static", filename)
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+@app.get("/api/learning/recent")
+def learning_recent():
+    with db() as con:
+        rows = con.execute("SELECT * FROM attack_learning ORDER BY created_at DESC LIMIT 50").fetchall()
+    return jsonify({"ok": True, "rows": [dict(x) for x in rows]})
