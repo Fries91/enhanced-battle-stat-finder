@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      2.2.3
-// @description  Honor-bar-only PDA build with stable N/A fallback when player IDs are hidden, no attack-column badges, no duplicates.
+// @version      3.0.0
+// @description  Clean honor-bar overlay build: one stable badge on any real player honor/name bar, no row-cell mounting, no Attack-column badges.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -17,6 +17,7 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
+  const VERSION = '3.0.0';
 
   const KEY = {
     api: 'absp_key',
@@ -28,60 +29,99 @@
     ff: 'absp_ff_enabled'
   };
 
-  const app = {
+  const state = {
     key: GM_getValue(KEY.api, '') || GM_getValue('ebsf2_key', ''),
-    user: json(GM_getValue(KEY.user, 'null')) || json(GM_getValue('ebsf2_user', 'null')),
+    user: safeJson(GM_getValue(KEY.user, 'null')) || safeJson(GM_getValue('ebsf2_user', 'null')),
     total: Number(GM_getValue(KEY.total, 0) || GM_getValue('ebsf2_total', 0) || 0),
-    stats: json(GM_getValue(KEY.stats, '{}')) || {},
+    stats: safeJson(GM_getValue(KEY.stats, '{}')) || {},
     ff: !!GM_getValue(KEY.ff, true),
-    open: false
+    panelOpen: false,
+    pending: false,
+    lastPaint: 0
   };
 
   GM_addStyle(`
-    /* Kill old stacked badge systems from earlier versions. */
-    .ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop{display:none!important;visibility:hidden!important;pointer-events:none!important}
+    .ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge,.absp-hb-badge{display:none!important;visibility:hidden!important;pointer-events:none!important}
 
-    .absp-hb-badge{position:absolute!important;right:3px!important;top:2px!important;z-index:50!important;display:inline-flex!important;align-items:center;justify-content:center;min-width:32px;max-width:58px;padding:1px 5px!important;border-radius:5px!important;border:1px solid #64748b;background:#111827;color:#cbd5e1;font:900 9px Arial,sans-serif!important;line-height:1!important;box-shadow:0 1px 4px #0009;pointer-events:auto;cursor:pointer;white-space:nowrap;overflow:hidden}
-    .absp-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .absp-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
-    .absp-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .absp-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    .absp-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
+    .absp3-badge{
+      position:fixed!important;
+      z-index:999994!important;
+      display:inline-flex!important;
+      align-items:center!important;
+      justify-content:center!important;
+      min-width:34px!important;
+      max-width:64px!important;
+      height:15px!important;
+      padding:0 5px!important;
+      border-radius:6px!important;
+      border:1px solid #64748b!important;
+      background:#111827!important;
+      color:#cbd5e1!important;
+      font:900 10px/1 Arial,sans-serif!important;
+      box-shadow:0 2px 5px #000b!important;
+      white-space:nowrap!important;
+      overflow:hidden!important;
+      pointer-events:auto!important;
+      cursor:pointer!important;
+      transform:translateZ(0)!important;
+    }
+    .absp3-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
+    .absp3-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
+    .absp3-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
+    .absp3-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
+    .absp3-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
 
-    #absp-main{display:none;position:fixed;left:16px;bottom:116px;z-index:999996;width:42px;height:42px;border-radius:9px;border:1px solid #806500;background:#111827;color:#fde68a;font-size:22px;box-shadow:0 2px 10px #000c;touch-action:none}
-    #absp-panel{position:fixed;left:8px;right:8px;top:74px;bottom:66px;z-index:999997;background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none}
-    #absp-panel.open{display:block}
-    #absp-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}
-    #absp-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}
-    #absp-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}
-    #absp-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
-    .absp-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9))}
-    .absp-hero-title{font-size:22px;font-weight:1000;color:#facc15;text-transform:uppercase}
-    .absp-chip{display:inline-flex;margin:7px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}
-    .absp-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35);margin-bottom:10px}
-    .absp-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase}
-    .absp-card p,.absp-card li{color:#dbeafe;line-height:1.42}
-    .absp-card ul{margin:7px 0 0 18px;padding:0}
-    .absp-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe}
+    #absp3-main{
+      display:none;position:fixed;left:16px;bottom:116px;z-index:999996;
+      width:42px;height:42px;border-radius:10px;border:1px solid #806500;
+      background:#111827;color:#fde68a;font-size:22px;box-shadow:0 2px 10px #000c;touch-action:none
+    }
 
-    .absp-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:255px;font:12px Arial,sans-serif;overflow:hidden}
-    .absp-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
-    .absp-pop-head button{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important}
-    .absp-pop-body{padding:10px;line-height:1.45}
-    .absp-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}
-    .absp-red{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    .absp-orange{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .absp-yellow{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
-    .absp-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .absp-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
-    .absp-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
-    .absp-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
-    .absp-grid div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
+    #absp3-panel{
+      position:fixed;left:8px;right:8px;top:74px;bottom:66px;z-index:999997;
+      background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);
+      color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;
+      box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none
+    }
+    #absp3-panel.open{display:block}
+    #absp3-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}
+    #absp3-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}
+    #absp3-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}
+    #absp3-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
+
+    .absp3-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9))}
+    .absp3-hero-title{font-size:22px;font-weight:1000;color:#facc15;text-transform:uppercase}
+    .absp3-chip{display:inline-flex;margin:7px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}
+    .absp3-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35);margin-bottom:10px}
+    .absp3-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase}
+    .absp3-card p,.absp3-card li{color:#dbeafe;line-height:1.42}
+    .absp3-card ul{margin:7px 0 0 18px;padding:0}
+    .absp3-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe}
+
+    .absp3-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:255px;font:12px Arial,sans-serif;overflow:hidden}
+    .absp3-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
+    .absp3-pop-head button{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important}
+    .absp3-pop-body{padding:10px;line-height:1.45}
+    .absp3-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}
+    .absp3-red{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
+    .absp3-orange{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
+    .absp3-yellow{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
+    .absp3-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
+    .absp3-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
+    .absp3-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
+    .absp3-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
+    .absp3-grid div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
   `);
 
-  function json(s){ try { return JSON.parse(s); } catch { return null; } }
+  function safeJson(s){ try { return JSON.parse(s); } catch { return null; } }
   function esc(s){ return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-  function text(el){ return (el?.textContent || '').replace(/\s+/g, ' ').trim(); }
+  function cleanText(el){ return (el?.textContent || '').replace(/\s+/g,' ').trim(); }
+  function simpleHash(s){
+    s = String(s || '');
+    let h = 0;
+    for(let i=0;i<s.length;i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return Math.abs(h).toString(36);
+  }
   function fmt(n){
     n = Number(n || 0);
     if(n >= 1e12) return (n/1e12).toFixed(1).replace('.0','') + 't';
@@ -111,22 +151,12 @@
     return null;
   }
 
-  function cache(){ return json(GM_getValue(KEY.cache, '{}')) || {}; }
-  function getIntel(id){ return cache()[String(id)] || null; }
-  function rank(i){
-    const s = String(i?.source || '').toLowerCase();
-    if(s.includes('manual') || s.includes('spy') || s.includes('exact')) return 95;
-    if(s.includes('ff') || s.includes('visible')) return 70;
-    if(s.includes('bsp')) return 66;
-    if(s.includes('fight')) return 40;
-    return Number(i?.confidence || 0);
-  }
+  function cache(){ return safeJson(GM_getValue(KEY.cache, '{}')) || {}; }
+  function getIntel(id){ return id ? cache()[String(id)] || null : null; }
   function saveIntel(id, intel){
     if(!id || !intel) return;
     const c = cache();
     const adjusted = {...intel, confidence:riskConfidence(intel)};
-    const old = c[String(id)];
-    if(old && rank(old) > rank(adjusted)) return;
     c[String(id)] = {...adjusted, user_id:Number(id), saved_at:Date.now()};
     GM_setValue(KEY.cache, JSON.stringify(c));
   }
@@ -137,7 +167,7 @@
         method, url: BASE + path,
         headers: {'Content-Type':'application/json'},
         data: data ? JSON.stringify(data) : undefined,
-        timeout: 22000,
+        timeout: 20000,
         onload: r => { try { resolve(JSON.parse(r.responseText)); } catch { resolve({ok:false,error:'bad json'}); } },
         onerror: e => resolve({ok:false,error:String(e)}),
         ontimeout: () => resolve({ok:false,error:'timeout'})
@@ -151,8 +181,8 @@
     if(l.includes('difficult') || l.includes('hard')) return 'difficult';
     if(l.includes('fair') || l.includes('good')) return 'fair';
     if(l.includes('easy')) return 'easy';
-    if(total && app.total){
-      const r = Number(total) / Number(app.total);
+    if(total && state.total){
+      const r = Number(total) / Number(state.total);
       if(r <= .75) return 'easy';
       if(r <= 1.15) return 'fair';
       if(r <= 1.75) return 'difficult';
@@ -164,9 +194,9 @@
   function riskConfidence(intel){
     let conf = Number(intel?.confidence || 0);
     const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total || !app.total) return conf;
+    if(!total || !state.total) return conf;
     const exact = /spy|manual|exact/i.test(String(intel?.source || ''));
-    const ratio = total / app.total;
+    const ratio = total / state.total;
 
     if(exact){
       if(ratio >= 10) conf = Math.min(conf || 75, 75);
@@ -216,94 +246,315 @@
     return n ? {total:n,best_total:n,label:diff(n),confidence:70,source:'visible_ff_bsp'} : null;
   }
 
-  function intelFor(id){ return id ? (getIntel(id) || bspIntel(id)) : null; }
+  function idNear(el){
+    if(!el) return null;
 
-  function fetchIntel(id, mount){
-    if(!id || !app.key || !mount || mount.dataset.abspFetching === '1') return;
-    mount.dataset.abspFetching = '1';
-    req('GET', `/api/player/${id}/intel?your_total=${app.total || 0}`).then(r => {
-      mount.dataset.abspFetching = '';
+    const links = [
+      ...(el.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
+      ...(el.parentElement?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
+      ...(el.closest?.('div,li,tr')?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || [])
+    ];
+    for(const a of links){
+      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
+      if(id) return Number(id);
+    }
+
+    let node = el;
+    for(let i=0; i<6 && node && node !== document.body; i++, node=node.parentElement){
+      const blob = [
+        node.getAttribute?.('href'),
+        node.getAttribute?.('onclick'),
+        node.getAttribute?.('data-user'),
+        node.getAttribute?.('data-userid'),
+        node.getAttribute?.('data-id'),
+        node.innerHTML
+      ].filter(Boolean).join(' ');
+      const id = extractId(blob);
+      if(id) return Number(id);
+    }
+    return null;
+  }
+
+  function badArea(el){
+    let node = el;
+    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
+      const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
+      const t = cleanText(node);
+
+      if(/chat|message|msg|conversation/.test(ident)) return true;
+      if(/Type your message here/.test(t)) return true;
+      if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|CAR THIEF|JOIN|24hrs/i.test(t)) return true;
+      if(/Battle Stats|Strength|Defense|Speed|Dexterity|Job Information|Property Information|Company|Income|Fees|Rating/i.test(t)) return true;
+      if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t) && t.length < 280) return true;
+    }
+    return false;
+  }
+
+  function isAttackOrColumn(el){
+    if(!el) return false;
+    const blob = [
+      el.textContent,
+      el.getAttribute?.('href'),
+      el.getAttribute?.('onclick'),
+      el.getAttribute?.('title'),
+      el.className
+    ].filter(Boolean).join(' ');
+    if(/\bAttack\b/i.test(blob) || /sid=attack|user2ID/i.test(blob)) return true;
+
+    let node = el;
+    for(let i=0; i<5 && node && node !== document.body; i++, node=node.parentElement){
+      const r = node.getBoundingClientRect?.();
+      const t = cleanText(node);
+      if(r && r.width < 130 && /\bAttack\b/i.test(t)) return true;
+    }
+    return false;
+  }
+
+  function rowFor(el){
+    let node = el;
+    for(let i=0; i<8 && node && node !== document.body; i++, node=node.parentElement){
+      if(badArea(node)) return null;
+      const r = node.getBoundingClientRect?.();
+      if(!r || r.width < 190 || r.height < 18) continue;
+      const t = cleanText(node);
+      const hasListSignals = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b/i.test(t);
+      const hasVisual = !!node.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]');
+      if(hasVisual && (hasListSignals || idNear(node))) return node;
+    }
+    return null;
+  }
+
+  function looksHonor(el){
+    if(!el || badArea(el) || isAttackOrColumn(el)) return false;
+    if(el.closest?.('#absp3-panel,.absp3-pop')) return false;
+
+    const r = el.getBoundingClientRect?.();
+    if(!r) return false;
+    if(r.width < 70 || r.width > 460 || r.height < 10 || r.height > 125) return false;
+    if(r.bottom < -120 || r.top > innerHeight + 900) return false;
+
+    const t = cleanText(el);
+    if(/Score|Status|Attack|Okay|Members|Join|24hrs/i.test(t) && t.length < 70) return false;
+
+    const cls = String(el.className || '').toLowerCase();
+    const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+    if(cls.includes('honor') || cls.includes('name')) return true;
+    if(st.includes('background-image')) return true;
+    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) return true;
+    if(el.tagName === 'IMG') return true;
+    if(el.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')) return true;
+
+    return false;
+  }
+
+  function bestHonorFrom(raw){
+    if(!raw || badArea(raw) || isAttackOrColumn(raw)) return null;
+
+    const row = rowFor(raw);
+    const rowRect = row?.getBoundingClientRect?.();
+
+    let options = [];
+    let node = raw;
+
+    for(let i=0; i<4 && node && node !== document.body; i++, node=node.parentElement){
+      if(looksHonor(node)) options.push(node);
+    }
+
+    const descendants = raw.querySelectorAll?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]') || [];
+    for(const d of descendants) if(looksHonor(d)) options.push(d);
+
+    if(!options.length && looksHonor(raw)) options.push(raw);
+
+    let best = null;
+    let score = -999;
+
+    for(const el of options){
+      const r = el.getBoundingClientRect();
+      if(rowRect && r.left > rowRect.left + rowRect.width * 0.62) continue;
+
+      const cls = String(el.className || '').toLowerCase();
+      const st = String(el.getAttribute?.('style') || '').toLowerCase();
+      let s = 0;
+      if(cls.includes('honor')) s += 65;
+      if(cls.includes('name')) s += 35;
+      if(st.includes('background-image')) s += 35;
+      if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) s += 18;
+      if(el.querySelector?.('[style*="background-image"],img')) s += 25;
+      if(r.width >= 100) s += 15;
+      s += Math.min(45, r.width / 7);
+      if(rowRect && r.left < rowRect.left + rowRect.width * 0.45) s += 10;
+
+      if(s > score){
+        score = s;
+        best = el;
+      }
+    }
+
+    return best;
+  }
+
+  function overlap(a, b){
+    const x = Math.max(0, Math.min(a.right,b.right) - Math.max(a.left,b.left));
+    const y = Math.max(0, Math.min(a.bottom,b.bottom) - Math.max(a.top,b.top));
+    const area = x * y;
+    const minArea = Math.min(a.width*a.height, b.width*b.height);
+    return minArea ? area / minArea : 0;
+  }
+
+  function honorKey(el, id){
+    const r = el.getBoundingClientRect();
+    if(id) return 'id:' + id + ':' + Math.round(r.top / 4);
+    const name = cleanText(el).slice(0, 50) || cleanText(el.parentElement).slice(0, 50);
+    return 'fallback:' + simpleHash(name + ':' + Math.round(r.left/8) + ':' + Math.round(r.top/8) + ':' + Math.round(r.width/8));
+  }
+
+  function candidateHonors(){
+    const raw = [...document.querySelectorAll(
+      '[class*="honor"],[class*="name"],[style*="background-image"],a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"],img'
+    )];
+
+    const picks = [];
+    const seenEl = new Set();
+
+    for(const item of raw){
+      const mount = bestHonorFrom(item);
+      if(!mount || seenEl.has(mount)) continue;
+      seenEl.add(mount);
+
+      const r = mount.getBoundingClientRect();
+      const id = idNear(mount) || idNear(item);
+      const key = honorKey(mount, id);
+
+      // Do not duplicate overlapping honor candidates. Keep the better/larger one.
+      let duplicate = false;
+      for(let i=0; i<picks.length; i++){
+        const p = picks[i];
+        if(overlap(r, p.rect) > 0.75){
+          if((r.width * r.height) > (p.rect.width * p.rect.height)){
+            picks[i] = {mount, rect:r, id, key};
+          }
+          duplicate = true;
+          break;
+        }
+      }
+      if(!duplicate) picks.push({mount, rect:r, id, key});
+    }
+
+    return picks.slice(0, 120);
+  }
+
+  function intelFor(id){
+    if(!id) return null;
+    return getIntel(id) || bspIntel(id);
+  }
+
+  function fetchIntel(id, key){
+    if(!id || !state.key) return;
+    const b = document.querySelector(`.absp3-badge[data-key="${cssEscape(key)}"]`);
+    if(!b || b.dataset.fetching === '1') return;
+
+    b.dataset.fetching = '1';
+    req('GET', `/api/player/${id}/intel?your_total=${state.total || 0}`).then(r => {
+      b.dataset.fetching = '';
       if(r?.ok && r.player){
         saveIntel(id, r.player);
-        updateMount(mount, getIntel(id) || r.player, id);
+        const intel = getIntel(id) || r.player;
+        updateBadge(b, intel);
       }
     });
   }
 
-  function initUI(){
-    if(document.getElementById('absp-main')) return;
-
-    const btn = document.createElement('button');
-    btn.id = 'absp-main';
-    btn.textContent = '🧠';
-    btn.onclick = () => { app.open = !app.open; renderPanel(); };
-    document.body.appendChild(btn);
-
-    const panel = document.createElement('div');
-    panel.id = 'absp-panel';
-    document.body.appendChild(panel);
-
-    makeDraggable(btn);
-    renderPanel();
+  function cssEscape(s){
+    return String(s).replace(/["\\]/g, '\\$&');
   }
 
-  function renderPanel(){
-    const p = document.getElementById('absp-panel');
-    if(!p) return;
-
-    p.className = app.open ? 'open' : '';
-    p.innerHTML = `
-      <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp-close">Close</button></h2>
-      <div class="body">
-        <div class="absp-hero">
-          <div class="absp-hero-title">Feed the Finder</div>
-          <div style="color:#cbd5e1;margin-top:4px;line-height:1.35">Honor bars only now — no more random crime/chat/job boxes. It eats cleaner.</div>
-          <span class="absp-chip">honor badges</span><span class="absp-chip">tap for intel</span><span class="absp-chip">stable</span>
-        </div>
-
-        <div class="absp-card"><b>📜 Rules</b><ul><li>Use predictions as guidance, not guaranteed wins.</li><li>Do not share private spy/manual data unless you are allowed to.</li><li>Fresh intel is tastier. Old intel may be stale.</li><li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li></ul></div>
-        <div class="absp-card"><b>⚔️ How It Works</b><p>The predictor places small stat badges on player honor/name bars only. Tap a badge to open the mini intel popup. It can use visible FF/BSP estimates, saved backend intel, and fight-learning signals.</p><p>New targets may show <b>N/A</b>. Feed it more info through visible estimates and fights so it can grow teeth.</p></div>
-        <div class="absp-card"><b>✅ Terms of Service</b><p>All numbers are estimates and may be wrong. You are responsible for your own attacks, choices, losses, wins, and respect gains.</p><p>This tool organizes information visible to you, provided by you, or gathered through allowed limited-key use.</p></div>
-        <div class="absp-card"><b>🔑 API Key Use & Storage</b><p>Use a <b>limited Torn API key</b>. Your key is stored locally in your browser/PDA userscript storage so the script can log you in and compare targets against your own battle stats.</p><p>No Torn password is ever requested. The backend uses the key only for login/stat detection or optional estimate support. The script avoids unnecessary API access and is built around limited-key use.</p></div>
-
-        <div class="absp-card">
-          <b>🍽️ Login — Feed the Beast</b>
-          <input id="absp-key" type="password" placeholder="Torn limited API key" value="${esc(app.key || '')}">
-          <label style="display:block;margin:8px 0;color:#dbeafe"><input id="absp-ff" type="checkbox" ${app.ff?'checked':''} style="width:auto"> Use FF/BSP visible/base intel when available</label>
-          <button id="absp-login">Login / Save</button>
-          <button id="absp-repaint">Repaint badges</button>
-          <div class="absp-status">Status: ${app.user?.name ? `${esc(app.user.name)} [${esc(app.user.user_id)}] • ${fmt(app.total)}` : 'Not logged in'}</div>
-        </div>
-      </div>`;
-
-    p.querySelector('#absp-close').onclick = () => { app.open = false; renderPanel(); };
-    p.querySelector('#absp-login').onclick = login;
-    p.querySelector('#absp-repaint').onclick = () => schedulePaint(50);
-    updateIcon();
-  }
-
-  async function login(){
-    app.key = document.getElementById('absp-key')?.value.trim() || '';
-    app.ff = !!document.getElementById('absp-ff')?.checked;
-    GM_setValue(KEY.api, app.key);
-    GM_setValue(KEY.ff, app.ff);
-
-    const r = await req('POST', '/api/login', {api_key: app.key});
-    if(r?.ok){
-      app.user = r.user;
-      app.total = Number(r.stats?.total || 0);
-      app.stats = {
-        strength: r.stats?.strength || 0,
-        defense: r.stats?.defense || 0,
-        speed: r.stats?.speed || 0,
-        dexterity: r.stats?.dexterity || 0
-      };
-      GM_setValue(KEY.user, JSON.stringify(app.user));
-      GM_setValue(KEY.total, app.total);
-      GM_setValue(KEY.stats, JSON.stringify(app.stats));
+  function makeBadge(key){
+    let b = document.querySelector(`.absp3-badge[data-key="${cssEscape(key)}"]`);
+    if(!b){
+      b = document.createElement('span');
+      b.className = 'absp3-badge absp3-unknown';
+      b.dataset.key = key;
+      b.textContent = 'N/A';
+      document.body.appendChild(b);
     }
-    renderPanel();
-    schedulePaint(100);
+    return b;
+  }
+
+  function updateBadge(b, intel){
+    const total = Number(intel?.best_total || intel?.total || 0);
+    if(!total){
+      b.className = 'absp3-badge absp3-unknown';
+      b.textContent = 'N/A';
+      b.title = 'No usable intel yet';
+      return;
+    }
+
+    const adjusted = {...intel, confidence:riskConfidence(intel)};
+    const d = diff(total, adjusted.label);
+    b.className = `absp3-badge absp3-${d}`;
+    b.textContent = fmt(total);
+    b.title = `${adjusted.source || 'intel'} • ${d} • ${adjusted.confidence}% • Tap for details`;
+  }
+
+  function positionBadge(b, rect){
+    // Put it on the honor bar itself, top-right, never in the Attack column.
+    const w = 50;
+    const x = Math.max(2, Math.min(innerWidth - w - 2, rect.right - w - 3));
+    const y = Math.max(56, Math.min(innerHeight - 18, rect.top + 2));
+    b.style.left = x + 'px';
+    b.style.top = y + 'px';
+    b.style.display = 'inline-flex';
+    b.style.visibility = 'visible';
+  }
+
+  async function paint(){
+    state.pending = false;
+    state.lastPaint = Date.now();
+
+    killOld();
+    updateIcon();
+
+    const honors = candidateHonors();
+    const live = new Set();
+
+    for(const h of honors){
+      const b = makeBadge(h.key);
+      live.add(h.key);
+      b.dataset.targetId = h.id ? String(h.id) : '';
+      b.dataset.honorText = cleanText(h.mount).slice(0, 80);
+
+      let intel = h.id ? intelFor(h.id) : null;
+
+      if(!intel && h.id && isProfilePage()) intel = visibleIntel();
+      if(intel && h.id) saveIntel(h.id, intel);
+
+      updateBadge(b, intel);
+      positionBadge(b, h.rect);
+
+      if(h.id && !intel) fetchIntel(h.id, h.key);
+    }
+
+    document.querySelectorAll('.absp3-badge').forEach(b => {
+      if(!live.has(b.dataset.key)){
+        b.remove();
+      }
+    });
+  }
+
+  function schedule(ms=450){
+    if(state.pending) return;
+    state.pending = true;
+    clearTimeout(window.__absp3Timer);
+    window.__absp3Timer = setTimeout(paint, ms);
+  }
+
+  function killOld(){
+    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge,.absp-hb-badge').forEach(x=>{
+      x.style.display = 'none';
+      x.style.visibility = 'hidden';
+      x.style.pointerEvents = 'none';
+    });
   }
 
   function isProfilePage(){
@@ -313,19 +564,95 @@
   }
 
   function ownProfile(){
-    if(!app.user?.user_id || !isProfilePage()) return false;
+    if(!state.user?.user_id || !isProfilePage()) return false;
     const pid = extractId(location.href) || extractId(document.body?.innerHTML || '');
-    if(pid) return Number(pid) === Number(app.user.user_id);
-    return !!(app.user?.name && String(document.title || '').toLowerCase().includes(String(app.user.name).toLowerCase()));
+    if(pid) return Number(pid) === Number(state.user.user_id);
+    return !!(state.user?.name && String(document.title || '').toLowerCase().includes(String(state.user.name).toLowerCase()));
+  }
+
+  function initUI(){
+    if(document.getElementById('absp3-main')) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'absp3-main';
+    btn.textContent = '🧠';
+    btn.onclick = () => { state.panelOpen = !state.panelOpen; renderPanel(); };
+    document.body.appendChild(btn);
+
+    const panel = document.createElement('div');
+    panel.id = 'absp3-panel';
+    document.body.appendChild(panel);
+
+    makeDraggable(btn);
+    renderPanel();
+  }
+
+  function renderPanel(){
+    const p = document.getElementById('absp3-panel');
+    if(!p) return;
+
+    p.className = state.panelOpen ? 'open' : '';
+    p.innerHTML = `
+      <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp3-close">Close</button></h2>
+      <div class="body">
+        <div class="absp3-hero">
+          <div class="absp3-hero-title">Feed the Finder</div>
+          <div style="color:#cbd5e1;margin-top:4px;line-height:1.35">Clean rebuild: honor bars only. It overlays the badge instead of shoving it into Torn’s rows.</div>
+          <span class="absp3-chip">honor bars only</span><span class="absp3-chip">one badge</span><span class="absp3-chip">stable overlay</span>
+        </div>
+
+        <div class="absp3-card"><b>📜 Rules</b><ul><li>Use predictions as guidance, not guaranteed wins.</li><li>Do not share private spy/manual data unless you are allowed to.</li><li>Fresh intel is better. Old intel may be stale.</li><li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li></ul></div>
+        <div class="absp3-card"><b>⚔️ How It Works</b><p>The predictor looks for real player honor/name bars and places one small overlay badge on the bar. It does not attach badges to Attack cells, crime role boxes, job/property panels, or chat text.</p><p>New targets may show <b>N/A</b>. When an ID or estimate is found, the same badge updates in place.</p></div>
+        <div class="absp3-card"><b>✅ Terms of Service</b><p>All numbers are estimates and may be wrong. You are responsible for your own attacks, choices, losses, wins, and respect gains.</p><p>This tool organizes information visible to you, provided by you, or gathered through allowed limited-key use.</p></div>
+        <div class="absp3-card"><b>🔑 API Key Use & Storage</b><p>Use a <b>limited Torn API key</b>. Your key is stored locally in your browser/PDA userscript storage so the script can log you in and compare targets against your own battle stats.</p><p>No Torn password is ever requested. The backend uses the key only for login/stat detection or optional estimate support.</p></div>
+
+        <div class="absp3-card">
+          <b>🍽️ Login</b>
+          <input id="absp3-key" type="password" placeholder="Torn limited API key" value="${esc(state.key || '')}">
+          <label style="display:block;margin:8px 0;color:#dbeafe"><input id="absp3-ff" type="checkbox" ${state.ff?'checked':''} style="width:auto"> Use FF/BSP visible/base intel when available</label>
+          <button id="absp3-login">Login / Save</button>
+          <button id="absp3-repaint">Repaint badges</button>
+          <div class="absp3-status">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}` : 'Not logged in'}</div>
+        </div>
+      </div>`;
+
+    p.querySelector('#absp3-close').onclick = () => { state.panelOpen = false; renderPanel(); };
+    p.querySelector('#absp3-login').onclick = login;
+    p.querySelector('#absp3-repaint').onclick = () => schedule(50);
+    updateIcon();
+  }
+
+  async function login(){
+    state.key = document.getElementById('absp3-key')?.value.trim() || '';
+    state.ff = !!document.getElementById('absp3-ff')?.checked;
+    GM_setValue(KEY.api, state.key);
+    GM_setValue(KEY.ff, state.ff);
+
+    const r = await req('POST', '/api/login', {api_key: state.key});
+    if(r?.ok){
+      state.user = r.user;
+      state.total = Number(r.stats?.total || 0);
+      state.stats = {
+        strength: r.stats?.strength || 0,
+        defense: r.stats?.defense || 0,
+        speed: r.stats?.speed || 0,
+        dexterity: r.stats?.dexterity || 0
+      };
+      GM_setValue(KEY.user, JSON.stringify(state.user));
+      GM_setValue(KEY.total, state.total);
+      GM_setValue(KEY.stats, JSON.stringify(state.stats));
+    }
+    renderPanel();
+    schedule(80);
   }
 
   function updateIcon(){
-    const b = document.getElementById('absp-main');
+    const b = document.getElementById('absp3-main');
     if(b) b.style.display = ownProfile() ? 'block' : 'none';
   }
 
   function makeDraggable(btn){
-    const saved = json(GM_getValue(KEY.icon, 'null'));
+    const saved = safeJson(GM_getValue(KEY.icon, 'null'));
     if(saved && saved.left != null && saved.top != null){
       btn.style.left = saved.left + 'px';
       btn.style.top = saved.top + 'px';
@@ -333,6 +660,7 @@
     }
 
     let drag = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
+
     const down = e => {
       const p = e.touches ? e.touches[0] : e;
       drag = true; moved = false;
@@ -374,220 +702,6 @@
     btn.onclick = e => { if(!moved) oldClick?.(e); };
   }
 
-  function badContext(el){
-    const t = text(el) + ' ' + text(el?.parentElement) + ' ' + text(el?.parentElement?.parentElement);
-    return /Members\s+Score\s+Status\s+Attack|Cosa-?Nostra\s+vs|7DS\*:|Lead Target|No active chain|Chain active|Your faction is not in a war|Rank:|Respect:/i.test(t) ||
-           /Battle Stats|Strength|Defense|Speed|Dexterity|Job Information|Property Information|Company|Income|Fees|Rating|Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|JOIN|24hrs/i.test(t) ||
-           /Type your message here|Faction\s*$/i.test(t);
-  }
-
-  function isChatOrCrime(el){
-    let node = el;
-    for(let i=0; i<7 && node && node !== document.body; i++, node = node.parentElement){
-      const ident = String((node.id || '') + ' ' + (node.className || '')).toLowerCase();
-      const t = text(node);
-      if(/chat|message|msg|conversation/.test(ident)) return true;
-      if(/Type your message here/.test(t)) return true;
-      if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|CAR THIEF|JOIN|24hrs/i.test(t)) return true;
-    }
-    return false;
-  }
-
-  function idNear(el){
-    if(!el) return null;
-
-    const links = [
-      ...(el.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
-      ...(el.parentElement?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || []),
-      ...(el.closest?.('div,li,tr')?.querySelectorAll?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]') || [])
-    ];
-
-    for(const a of links){
-      const id = extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick')].filter(Boolean).join(' '));
-      if(id) return Number(id);
-    }
-
-    let node = el;
-    for(let i=0; i<7 && node && node !== document.body; i++, node=node.parentElement){
-      const blob = [
-        node.getAttribute?.('href'),
-        node.getAttribute?.('onclick'),
-        node.getAttribute?.('data-user'),
-        node.getAttribute?.('data-userid'),
-        node.getAttribute?.('data-id'),
-        node.innerHTML
-      ].filter(Boolean).join(' ');
-      const id = extractId(blob);
-      if(id) return Number(id);
-    }
-
-    return null;
-  }
-
-  function honorMount(raw){
-    if(!raw || raw.closest?.('#absp-panel,.absp-pop')) return null;
-    if(isChatOrCrime(raw)) return null;
-
-    const id = idNear(raw);
-    if(!id && !isProfilePage()) return null;
-
-    let best = raw;
-    let node = raw.parentElement;
-
-    for(let i=0; i<3 && node && node !== document.body; i++, node=node.parentElement){
-      if(isChatOrCrime(node)) return null;
-      const r = node.getBoundingClientRect?.();
-      if(!r || r.width < 70 || r.width > 390 || r.height < 10 || r.height > 115) continue;
-      if(badContext(node)) continue;
-
-      const hasHonor =
-        node.matches?.('[class*="honor"],[class*="name"],[style*="background-image"],a[href*="profiles.php"],a[href*="XID="]') ||
-        node.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]');
-
-      if(hasHonor) best = node;
-    }
-
-    const r = best.getBoundingClientRect?.();
-    if(!r || r.width < 70 || r.width > 390 || r.height < 10 || r.height > 115) return null;
-    if(r.bottom < -120 || r.top > innerHeight + 800) return null;
-    if(badContext(best)) return null;
-
-    return best;
-  }
-
-  function rowFor(el){
-    let node = el;
-    for(let i=0; i<7 && node && node !== document.body; i++, node = node.parentElement){
-      if(isChatOrCrime(node)) return null;
-      const r = node.getBoundingClientRect?.();
-      if(!r || r.width < 180 || r.height < 18) continue;
-      if(!idNear(node)) continue;
-      if(badContext(node)) continue;
-      return node;
-    }
-    return null;
-  }
-
-  function leftSide(mount, row){
-    if(!row) return true;
-    const mr = mount?.getBoundingClientRect?.();
-    const rr = row?.getBoundingClientRect?.();
-    if(!mr || !rr) return true;
-    return mr.left <= rr.left + rr.width * 0.62;
-  }
-
-  function updateMount(mount, intel, id){
-    if(!mount || !id) return;
-
-    let b = mount.querySelector(':scope > .absp-hb-badge');
-    if(!b){
-      b = document.createElement('span');
-      b.className = 'absp-hb-badge';
-      const cs = getComputedStyle(mount);
-      if(cs.position === 'static') mount.style.position = 'relative';
-      mount.appendChild(b);
-    }
-
-    [...mount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x => x.remove());
-
-    const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total){
-      b.className = 'absp-hb-badge absp-unknown';
-      b.textContent = 'N/A';
-      b.title = 'No usable intel yet';
-    } else {
-      const adjusted = {...intel, confidence:riskConfidence(intel)};
-      const d = diff(total, adjusted.label);
-      b.className = `absp-hb-badge absp-${d}`;
-      b.textContent = fmt(total);
-      b.title = `${adjusted.source || 'intel'} • ${d} • ${adjusted.confidence}% • Tap for details`;
-    }
-
-    b.dataset.targetId = String(id);
-  }
-
-  async function paintHonors(){
-    const body = (document.body?.innerText || '').slice(0, 9000);
-    const allowed = /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
-      /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(body);
-
-    if(!allowed) return;
-
-    const candidates = [...document.querySelectorAll(
-      '[class*="honor"],[class*="name"],[style*="background-image"],a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]'
-    )];
-
-    const seen = new Set();
-    let painted = 0;
-
-    for(const raw of candidates){
-      if(painted >= 90) break;
-      if(isChatOrCrime(raw)) continue;
-
-      const mount = honorMount(raw);
-      if(!mount) continue;
-
-      let id = idNear(mount) || idNear(raw);
-      if(!id && isProfilePage()) id = extractId(location.href) || extractId(document.body?.innerHTML || '');
-      if(!id) continue;
-
-      const row = rowFor(mount);
-      if(row && !leftSide(mount, row)) continue;
-
-      const rect = mount.getBoundingClientRect();
-      const key = id + ':' + Math.round(rect.top) + ':' + Math.round(rect.left);
-      if(seen.has(key)) continue;
-      seen.add(key);
-
-      let intel = intelFor(id);
-      if(!intel && isProfilePage()) intel = visibleIntel();
-      if(intel) saveIntel(id, intel);
-
-      updateMount(mount, intel, id);
-      painted++;
-
-      if(!intel) fetchIntel(id, mount);
-    }
-  }
-
-  function clean(){
-    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge').forEach(x => {
-      x.style.display = 'none';
-      x.style.visibility = 'hidden';
-      x.style.pointerEvents = 'none';
-    });
-
-    document.querySelectorAll('.absp-hb-badge').forEach(b => {
-      if(b.closest?.('.absp-pop')) return;
-      const mount = b.parentElement;
-      if(!mount || !b.dataset.targetId){
-        b.remove();
-        return;
-      }
-      if(isChatOrCrime(mount) || badContext(mount)){
-        b.remove();
-        return;
-      }
-      const row = rowFor(mount);
-      if(row && !leftSide(mount, row)){
-        b.remove();
-      }
-    });
-
-    updateIcon();
-  }
-
-  async function paint(){
-    updateIcon();
-    await paintHonors();
-    clean();
-  }
-
-  function schedulePaint(ms = 800){
-    clearTimeout(window.__abspHonorOnlyTimer);
-    window.__abspHonorOnlyTimer = setTimeout(paint, ms);
-  }
-
   function tag(v, type='value'){
     let color = 'grey';
     if(type === 'conf'){
@@ -602,28 +716,29 @@
       else if(l.includes('easy')) color = 'green';
       else if(l.includes('low') || l.includes('light')) color = 'blue';
     }
-    return `<span class="absp-tag absp-${color}">${esc(v || 'Unknown')}</span>`;
+    return `<span class="absp3-tag absp3-${color}">${esc(v || 'Unknown')}</span>`;
   }
 
   function popup(b){
-    document.querySelectorAll('.absp-pop').forEach(x => x.remove());
-    const id = b.dataset.targetId;
+    document.querySelectorAll('.absp3-pop').forEach(x => x.remove());
+
+    const id = b.dataset.targetId ? Number(b.dataset.targetId) : null;
     const intel = (id && getIntel(id)) || (id && bspIntel(id)) || {total:parseNum(b.textContent), confidence:0, source:'badge'};
     const total = Number(intel?.best_total || intel?.total || 0);
     const conf = riskConfidence(intel);
     const d = diff(total, intel?.label);
 
     const pop = document.createElement('div');
-    pop.className = 'absp-pop';
+    pop.className = 'absp3-pop';
     pop.innerHTML = `
-      <div class="absp-pop-head"><b>⚔️ Battle Intel</b><button class="close">×</button></div>
-      <div class="absp-pop-body">
+      <div class="absp3-pop-head"><b>⚔️ Battle Intel</b><button class="close">×</button></div>
+      <div class="absp3-pop-body">
         <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} ${tag(total ? d : 'Unknown')}</div>
         <div><b>Source:</b> ${esc(intel?.source || 'none')}</div>
         <div><b>Confidence:</b> ${tag(conf, 'conf')}</div>
-        ${total && app.total && total / app.total >= 2.5 ? `<div style="margin-top:7px;padding:6px;border-radius:8px;background:#431407;color:#fdba74;border:1px solid #f97316;font-weight:900">Confidence reduced: high stat gap</div>` : ''}
+        ${total && state.total && total / state.total >= 2.5 ? `<div style="margin-top:7px;padding:6px;border-radius:8px;background:#431407;color:#fdba74;border:1px solid #f97316;font-weight:900">Confidence reduced: high stat gap</div>` : ''}
         <hr>
-        <div class="absp-grid">
+        <div class="absp3-grid">
           <div><b>STR</b>${tag('Unknown')}</div>
           <div><b>DEF</b>${tag('Unknown')}</div>
           <div><b>SPD</b>${tag('Unknown')}</div>
@@ -637,598 +752,54 @@
     const r = b.getBoundingClientRect();
     pop.style.left = Math.max(8, Math.min(innerWidth - 265, r.left)) + 'px';
     pop.style.top = Math.max(78, Math.min(innerHeight - 280, r.bottom + 6)) + 'px';
-    pop.querySelector('.close').onclick = e => { e.stopPropagation(); pop.remove(); schedulePaint(150); };
+    pop.querySelector('.close').onclick = e => { e.stopPropagation(); pop.remove(); schedule(120); };
   }
 
   document.addEventListener('click', e => {
-    const b = e.target.closest?.('.absp-hb-badge');
+    const b = e.target.closest?.('.absp3-badge');
     if(!b) return;
     e.preventDefault();
     e.stopPropagation();
     popup(b);
   }, true);
 
-  function isAttackClick(el){
-    if(!el) return false;
-    const blob = [el.href, el.getAttribute?.('href'), el.getAttribute?.('onclick'), el.textContent, el.getAttribute?.('title')].filter(Boolean).join(' ');
-    return /sid=attack|user2ID|attack|fight/i.test(blob);
-  }
-
   document.addEventListener('click', e => {
     const el = e.target.closest?.('a,button,[onclick]');
-    if(!isAttackClick(el)) return;
+    if(!el) return;
+    const blob = [el.href, el.getAttribute?.('href'), el.getAttribute?.('onclick'), el.textContent, el.getAttribute?.('title')].filter(Boolean).join(' ');
+    if(!/sid=attack|user2ID|attack|fight/i.test(blob)) return;
     const id = idNear(el);
     if(id) GM_setValue('absp_last_attack_target', JSON.stringify({id, ts:Date.now()}));
   }, true);
 
   function boot(){
     initUI();
+    killOld();
     updateIcon();
-    clean();
 
-    [600, 1600, 3500, 6500].forEach(t => setTimeout(() => schedulePaint(50), t));
+    [300, 900, 1800, 3500, 6500].forEach(t => setTimeout(() => schedule(50), t));
 
     try{
-      const obs = new MutationObserver(() => schedulePaint(1100));
+      const obs = new MutationObserver(() => schedule(650));
       obs.observe(document.body, {childList:true, subtree:true});
     }catch {}
+
+    window.addEventListener('scroll', () => schedule(60), {passive:true});
+    window.addEventListener('resize', () => schedule(120), {passive:true});
 
     let last = location.href;
     setInterval(() => {
       if(location.href !== last){
         last = location.href;
-        schedulePaint(800);
+        schedule(400);
       } else {
-        clean();
+        killOld();
+        updateIcon();
+        // Reposition visible badges lightly.
+        if(Date.now() - state.lastPaint > 2500) schedule(50);
       }
-    }, 3000);
+    }, 2200);
   }
 
   boot();
-
-
-  /* v2.2.2 strict honor mount override
-     Fixes:
-     - Attack column badges.
-     - Double/stacked badges on honor bars.
-     - Uses attack links only to find target ID, never as a badge mount.
-     - One chosen badge mount per player row.
-  */
-
-  function absp222IsAttackColumn(el){
-    if(!el) return false;
-    const blob = [
-      el.textContent,
-      el.getAttribute?.('href'),
-      el.getAttribute?.('onclick'),
-      el.getAttribute?.('title'),
-      el.className
-    ].filter(Boolean).join(' ');
-    if(/\bAttack\b/i.test(blob) || /sid=attack|user2ID/i.test(blob)) return true;
-
-    let node = el;
-    for(let i=0; i<5 && node && node !== document.body; i++, node=node.parentElement){
-      const t = (node.textContent || '').replace(/\s+/g,' ').trim();
-      const r = node.getBoundingClientRect?.();
-      if(r && r.width < 120 && /\bAttack\b/i.test(t)) return true;
-    }
-    return false;
-  }
-
-  function absp222RowForElement(el){
-    let node = el;
-    for(let i=0; i<9 && node && node !== document.body; i++, node=node.parentElement){
-      const r = node.getBoundingClientRect?.();
-      if(!r || r.width < 220 || r.height < 20) continue;
-      const t = (node.textContent || '').replace(/\s+/g,' ').trim();
-      if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t)) continue;
-      if(/used 25 energy attacking|initiated an attack|lost to|won against|fired .* rounds/i.test(t)) continue;
-
-      const id = idNear(node);
-      const hasStatus = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b/i.test(t);
-      const hasVisual = !!node.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]');
-      if(id && hasVisual && hasStatus) return node;
-    }
-    return null;
-  }
-
-  function absp222VisualHonorCandidate(el, row){
-    if(!el || !row) return false;
-    if(el.closest?.('#absp-panel,.absp-pop')) return false;
-    if(isChatOrCrime(el)) return false;
-    if(absp222IsAttackColumn(el)) return false;
-
-    const er = el.getBoundingClientRect?.();
-    const rr = row.getBoundingClientRect?.();
-    if(!er || !rr) return false;
-
-    // Must be on the left member/name side, never score/status/attack side.
-    if(er.left > rr.left + rr.width * 0.58) return false;
-
-    if(er.width < 55 || er.width > 320 || er.height < 10 || er.height > 95) return false;
-    if(er.bottom < -120 || er.top > innerHeight + 800) return false;
-
-    const t = (el.textContent || el.parentElement?.textContent || '').replace(/\s+/g,' ').trim();
-    if(/Score|Status|Attack|Okay|Members/i.test(t) && t.length < 60) return false;
-
-    const cls = String(el.className || '').toLowerCase();
-    const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-    if(cls.includes('honor') || cls.includes('name')) return true;
-    if(st.includes('background-image')) return true;
-    if(el.tagName === 'IMG') return true;
-    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) return true;
-    if(el.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')) return true;
-
-    return false;
-  }
-
-  function absp222BestMountForRow(row){
-    if(!row) return null;
-    const rr = row.getBoundingClientRect?.();
-    if(!rr) return null;
-
-    const candidates = [...row.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
-
-    let best = null;
-    let bestScore = -999;
-
-    for(const raw of candidates){
-      let el = raw;
-
-      // Prefer compact parent plate if it is still left-side and visual.
-      for(let i=0; i<3 && el.parentElement && el.parentElement !== document.body; i++){
-        const p = el.parentElement;
-        if(absp222VisualHonorCandidate(p, row)){
-          el = p;
-        } else {
-          break;
-        }
-      }
-
-      if(!absp222VisualHonorCandidate(el, row)) continue;
-
-      const r = el.getBoundingClientRect();
-      const cls = String(el.className || '').toLowerCase();
-      const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-      let score = 0;
-      if(cls.includes('honor')) score += 60;
-      if(cls.includes('name')) score += 35;
-      if(st.includes('background-image')) score += 35;
-      if(el.querySelector?.('[style*="background-image"],img')) score += 25;
-      if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) score += 20;
-      score += Math.min(40, r.width / 7);
-
-      // Prefer the visible name/honor strip, not tiny icons.
-      if(r.width >= 100) score += 15;
-      if(r.left < rr.left + rr.width * 0.45) score += 10;
-
-      if(score > bestScore){
-        bestScore = score;
-        best = el;
-      }
-    }
-
-    return best;
-  }
-
-  function absp222RemoveRowDuplicates(row, keepMount){
-    if(!row) return;
-    row.querySelectorAll('.absp-hb-badge').forEach(b=>{
-      if(b.parentElement !== keepMount) b.remove();
-    });
-    if(keepMount){
-      [...keepMount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x=>x.remove());
-    }
-  }
-
-  async function absp222PaintHonors(){
-    const body = (document.body?.innerText || '').slice(0, 9000);
-    const allowed = /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
-      /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(body);
-
-    if(!allowed) return;
-
-    const possibleRows = new Set();
-
-    document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]').forEach(el=>{
-      const row = absp222RowForElement(el);
-      if(row) possibleRows.add(row);
-    });
-
-    // Profile page fallback: use profile honor image/name even if no faction-style row.
-    if(isProfilePage()){
-      const pid = extractId(location.href) || extractId(document.body?.innerHTML || '');
-      if(pid){
-        const profileCandidates = [...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
-        let best = null, score = -999;
-        for(const el of profileCandidates){
-          if(isChatOrCrime(el) || badContext(el) || absp222IsAttackColumn(el)) continue;
-          const r = el.getBoundingClientRect?.();
-          if(!r || r.width < 70 || r.width > 450 || r.height < 10 || r.height > 120 || r.top < 120) continue;
-          let s = Math.min(60, r.width / 6);
-          if(String(el.getAttribute?.('style') || '').includes('background-image')) s += 40;
-          if(el.tagName === 'IMG') s += 20;
-          if(s > score){ score = s; best = el.parentElement || el; }
-        }
-        if(best){
-          let intel = intelFor(pid) || visibleIntel();
-          if(intel) saveIntel(pid, intel);
-          updateMount(best, intel, pid);
-        }
-      }
-    }
-
-    let painted = 0;
-    for(const row of possibleRows){
-      if(painted >= 90) break;
-
-      const id = idNear(row);
-      if(!id) continue;
-
-      const mount = absp222BestMountForRow(row);
-      if(!mount) continue;
-
-      absp222RemoveRowDuplicates(row, mount);
-
-      let intel = intelFor(id);
-      if(intel) saveIntel(id, intel);
-
-      updateMount(mount, intel, id);
-      painted++;
-
-      if(!intel) fetchIntel(id, mount);
-    }
-
-    absp222Clean();
-  }
-
-  function absp222Clean(){
-    // Hide older/other badge systems.
-    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge').forEach(x => {
-      x.style.display = 'none';
-      x.style.visibility = 'hidden';
-      x.style.pointerEvents = 'none';
-    });
-
-    document.querySelectorAll('.absp-hb-badge').forEach(b=>{
-      if(b.closest?.('.absp-pop')) return;
-      const mount = b.parentElement;
-      if(!mount || !b.dataset.targetId){
-        b.remove();
-        return;
-      }
-
-      if(isChatOrCrime(mount) || badContext(mount) || absp222IsAttackColumn(mount)){
-        b.remove();
-        return;
-      }
-
-      const row = absp222RowForElement(mount);
-      if(row){
-        const best = absp222BestMountForRow(row);
-        if(best !== mount){
-          b.remove();
-          return;
-        }
-      } else if(!isProfilePage()){
-        b.remove();
-      }
-    });
-
-    updateIcon();
-  }
-
-  // Override the old honor painter with this stricter one.
-  paintHonors = absp222PaintHonors;
-  clean = absp222Clean;
-
-  function absp222Schedule(ms=800){
-    clearTimeout(window.__absp222Timer);
-    window.__absp222Timer = setTimeout(async ()=>{
-      await absp222PaintHonors();
-      absp222Clean();
-    }, ms);
-  }
-
-  [300, 1200, 2600, 5200].forEach(t=>setTimeout(()=>absp222Schedule(50), t));
-
-  try{
-    const obs222 = new MutationObserver(()=>absp222Schedule(1100));
-    obs222.observe(document.body, {childList:true, subtree:true});
-  }catch(e){}
-
-  setInterval(()=>absp222Clean(), 3000);
-  absp222Schedule(100);
-
-
-
-  /* v2.2.3 stable N/A fallback
-     v2.2.2 was too strict when PDA hid player IDs.
-     This paints one stable N/A on the left honor/name bar even without an ID.
-     If an ID is found later, the same badge updates with real intel.
-  */
-
-  function absp223CleanText(s){
-    return String(s || '').replace(/\s+/g,' ').trim();
-  }
-
-  function absp223RowLooksPlayer(row){
-    if(!row || isChatOrCrime(row)) return false;
-    const r = row.getBoundingClientRect?.();
-    if(!r || r.width < 220 || r.height < 22 || r.bottom < -120 || r.top > innerHeight + 900) return false;
-
-    const t = absp223CleanText(row.textContent);
-    if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t)) return false;
-    if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|JOIN|24hrs/i.test(t)) return false;
-    if(/used 25 energy attacking|initiated an attack|lost to|won against|fired .* rounds/i.test(t)) return false;
-
-    const hasStatusOrAttack = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b/i.test(t);
-    const hasVisual = !!row.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]');
-    return hasStatusOrAttack && hasVisual;
-  }
-
-  function absp223RowFor(el){
-    let node = el;
-    for(let i=0; i<9 && node && node !== document.body; i++, node=node.parentElement){
-      if(absp223RowLooksPlayer(node)) return node;
-    }
-    return null;
-  }
-
-  function absp223IsGoodHonorVisual(el, row){
-    if(!el || !row) return false;
-    if(el.closest?.('#absp-panel,.absp-pop')) return false;
-    if(isChatOrCrime(el) || absp222IsAttackColumn(el)) return false;
-
-    const er = el.getBoundingClientRect?.();
-    const rr = row.getBoundingClientRect?.();
-    if(!er || !rr) return false;
-
-    // Left name side only.
-    if(er.left > rr.left + rr.width * 0.58) return false;
-
-    if(er.width < 55 || er.width > 340 || er.height < 10 || er.height > 100) return false;
-    if(er.bottom < -120 || er.top > innerHeight + 900) return false;
-
-    const local = absp223CleanText(el.textContent || el.parentElement?.textContent);
-    if(/Score|Status|Attack|Okay|Members/i.test(local) && local.length < 65) return false;
-
-    const cls = String(el.className || '').toLowerCase();
-    const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-    if(cls.includes('honor') || cls.includes('name')) return true;
-    if(st.includes('background-image')) return true;
-    if(el.tagName === 'IMG') return true;
-    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) return true;
-    if(el.querySelector?.('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')) return true;
-
-    return false;
-  }
-
-  function absp223BestMount(row){
-    if(!row) return null;
-    const rr = row.getBoundingClientRect?.();
-    if(!rr) return null;
-
-    const candidates = [...row.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
-
-    let best = null;
-    let bestScore = -999;
-
-    for(const raw of candidates){
-      let el = raw;
-
-      // Prefer full honor/name plate over inner img.
-      for(let i=0; i<3 && el.parentElement && el.parentElement !== document.body; i++){
-        const p = el.parentElement;
-        if(absp223IsGoodHonorVisual(p, row)) el = p;
-        else break;
-      }
-
-      if(!absp223IsGoodHonorVisual(el, row)) continue;
-
-      const r = el.getBoundingClientRect();
-      const cls = String(el.className || '').toLowerCase();
-      const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-      let score = 0;
-      if(cls.includes('honor')) score += 60;
-      if(cls.includes('name')) score += 35;
-      if(st.includes('background-image')) score += 35;
-      if(el.querySelector?.('[style*="background-image"],img')) score += 25;
-      if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) score += 20;
-      if(r.width >= 100) score += 15;
-      if(r.left < rr.left + rr.width * 0.45) score += 10;
-      score += Math.min(40, r.width / 7);
-
-      if(score > bestScore){
-        bestScore = score;
-        best = el;
-      }
-    }
-
-    return best;
-  }
-
-  function absp223FallbackKey(row, mount){
-    const raw = absp223CleanText(mount?.textContent || row?.textContent || '');
-    let name = raw
-      .replace(/\bOkay\b|\bAttack\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b/ig, ' ')
-      .replace(/\b0\.00\b/g, ' ')
-      .replace(/\s+/g,' ')
-      .trim()
-      .slice(0, 40);
-
-    if(!name){
-      const r = mount?.getBoundingClientRect?.();
-      name = r ? `row_${Math.round(r.top)}_${Math.round(r.left)}` : 'unknown_row';
-    }
-    return 'name:' + name;
-  }
-
-  function absp223UpdateMount(mount, intel, idOrKey){
-    if(!mount || !idOrKey) return;
-
-    let b = mount.querySelector(':scope > .absp-hb-badge');
-    if(!b){
-      b = document.createElement('span');
-      b.className = 'absp-hb-badge';
-      const cs = getComputedStyle(mount);
-      if(cs.position === 'static') mount.style.position = 'relative';
-      mount.appendChild(b);
-    }
-
-    [...mount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x => x.remove());
-
-    const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total){
-      b.className = 'absp-hb-badge absp-unknown';
-      b.textContent = 'N/A';
-      b.title = 'No usable intel yet';
-    } else {
-      const adjusted = {...intel, confidence:riskConfidence(intel)};
-      const d = diff(total, adjusted.label);
-      b.className = `absp-hb-badge absp-${d}`;
-      b.textContent = fmt(total);
-      b.title = `${adjusted.source || 'intel'} • ${d} • ${adjusted.confidence}% • Tap for details`;
-    }
-
-    if(/^\d+$/.test(String(idOrKey))) {
-      b.dataset.targetId = String(idOrKey);
-      delete b.dataset.targetKey;
-    } else {
-      b.dataset.targetKey = String(idOrKey);
-    }
-  }
-
-  function absp223RemoveDuplicates(row, keepMount){
-    if(!row) return;
-    row.querySelectorAll('.absp-hb-badge').forEach(b=>{
-      if(b.parentElement !== keepMount) b.remove();
-    });
-    if(keepMount){
-      [...keepMount.querySelectorAll(':scope > .absp-hb-badge')].slice(1).forEach(x=>x.remove());
-    }
-  }
-
-  async function absp223PaintHonors(){
-    const body = (document.body?.innerText || '').slice(0, 9000);
-    const allowed = /profiles\.php|factions\.php|hospital|jail|loader\.php|page\.php|competition|userlist|friends|blacklist/i.test(location.href) ||
-      /User Information|Actions|Hospital|Jail|Travel|Members|Status|Attack|Profile/i.test(body);
-
-    if(!allowed) return;
-
-    const possibleRows = new Set();
-    document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]').forEach(el=>{
-      const row = absp223RowFor(el);
-      if(row) possibleRows.add(row);
-    });
-
-    let painted = 0;
-    for(const row of possibleRows){
-      if(painted >= 100) break;
-
-      const mount = absp223BestMount(row);
-      if(!mount) continue;
-
-      const id = idNear(row) || idNear(mount);
-      const idOrKey = id || absp223FallbackKey(row, mount);
-
-      absp223RemoveDuplicates(row, mount);
-
-      let intel = id ? intelFor(id) : null;
-      if(intel && id) saveIntel(id, intel);
-
-      absp223UpdateMount(mount, intel, idOrKey);
-      painted++;
-
-      if(id && !intel) fetchIntel(id, mount);
-    }
-
-    // Profile page fallback.
-    if(isProfilePage()){
-      const pid = extractId(location.href) || extractId(document.body?.innerHTML || '');
-      if(pid){
-        const candidates = [...document.querySelectorAll('[class*="honor"],[class*="name"],[style*="background-image"],img,a[href*="profiles.php"],a[href*="XID="]')];
-        let best = null, score = -999;
-        for(const el of candidates){
-          if(isChatOrCrime(el) || badContext(el) || absp222IsAttackColumn(el)) continue;
-          const r = el.getBoundingClientRect?.();
-          if(!r || r.width < 70 || r.width > 450 || r.height < 10 || r.height > 120 || r.top < 120) continue;
-
-          let s = Math.min(60, r.width / 6);
-          if(String(el.getAttribute?.('style') || '').includes('background-image')) s += 40;
-          if(el.tagName === 'IMG') s += 20;
-          if(s > score){ score = s; best = el.parentElement || el; }
-        }
-        if(best){
-          let intel = intelFor(pid) || visibleIntel();
-          if(intel) saveIntel(pid, intel);
-          absp223UpdateMount(best, intel, pid);
-        }
-      }
-    }
-
-    absp223Clean();
-  }
-
-  function absp223Clean(){
-    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge').forEach(x => {
-      x.style.display = 'none';
-      x.style.visibility = 'hidden';
-      x.style.pointerEvents = 'none';
-    });
-
-    document.querySelectorAll('.absp-hb-badge').forEach(b=>{
-      if(b.closest?.('.absp-pop')) return;
-      const mount = b.parentElement;
-
-      if(!mount || (!b.dataset.targetId && !b.dataset.targetKey)){
-        b.remove();
-        return;
-      }
-
-      if(isChatOrCrime(mount) || badContext(mount) || absp222IsAttackColumn(mount)){
-        b.remove();
-        return;
-      }
-
-      const row = absp223RowFor(mount);
-      if(row){
-        const best = absp223BestMount(row);
-        if(best !== mount){
-          b.remove();
-          return;
-        }
-      } else if(!isProfilePage()){
-        b.remove();
-      }
-    });
-
-    updateIcon();
-  }
-
-  paintHonors = absp223PaintHonors;
-  clean = absp223Clean;
-
-  function absp223Schedule(ms=800){
-    clearTimeout(window.__absp223Timer);
-    window.__absp223Timer = setTimeout(async ()=>{
-      await absp223PaintHonors();
-      absp223Clean();
-    }, ms);
-  }
-
-  [250, 900, 1800, 3600, 6500].forEach(t=>setTimeout(()=>absp223Schedule(50), t));
-
-  try{
-    const obs223 = new MutationObserver(()=>absp223Schedule(950));
-    obs223.observe(document.body, {childList:true, subtree:true});
-  }catch(e){}
-
-  setInterval(()=>absp223Clean(), 3500);
-  absp223Schedule(100);
-
 })();
