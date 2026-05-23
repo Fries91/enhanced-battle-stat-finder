@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.3.5
-// @description  Feed the Finder compact auto-only build: attack-log auto learning, shared STR/DEF/SPD/DEX ranges, armor/temp notes, profile icon, and safe badge clicks.
+// @version      3.3.7
+// @description  Compact auto-only ABSP with admin-only debug history, attack-log auto learning, shared stat ranges, and safe badge clicks.
 // @author       Fries91
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/bringafriend.php*
@@ -34,8 +34,9 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.3.5';
-  const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v335', sent:'absp_shared_sent_v335', ff:'absp_ff_enabled' };
+  const VERSION = '3.3.7';
+  const ADMIN_IDS = new Set(['3679030']);
+  const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v336', sent:'absp_shared_sent_v336', ff:'absp_ff_enabled',debug:'absp_debug_history_v336' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
 
   GM_addStyle(`
@@ -54,14 +55,29 @@
   function safeJson(s){try{return JSON.parse(s)}catch{return null}} function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))} function cleanText(el){return(el?.textContent||'').replace(/\s+/g,' ').trim()} function fmt(n){n=Number(n||0);if(n>=1e12)return(n/1e12).toFixed(1).replace('.0','')+'t';if(n>=1e9)return(n/1e9).toFixed(1).replace('.0','')+'b';if(n>=1e6)return(n/1e6).toFixed(1).replace('.0','')+'m';if(n>=1e3)return(n/1e3).toFixed(1).replace('.0','')+'k';return String(Math.round(n))}
   function parseNum(v){const m=String(v??'').toLowerCase().replace(/,/g,'').match(/([0-9]+(?:\.[0-9]+)?)\s*([kmbt])?/);if(!m)return 0;let n=Number(m[1]);if(m[2]==='k')n*=1e3;if(m[2]==='m')n*=1e6;if(m[2]==='b')n*=1e9;if(m[2]==='t')n*=1e12;return Math.round(n)}
   function extractId(blob){blob=String(blob||'');let m=blob.match(/profiles\.php\?XID=(\d{3,10})|[?&]XID=(\d{3,10})|[?&]user2ID=(\d{3,10})/i);if(m)return Number(m[1]||m[2]||m[3]);m=blob.match(/(?:XID|user2ID|userID|targetID|profileId|targetId|data-userid|data-user|data-id)[=\\"':%26 ]+(\d{3,10})/i);return m?Number(m[1]):null}
-  function req(method,path,data){return new Promise(resolve=>{GM_xmlhttpRequest({method,url:BASE+path,headers:{'Content-Type':'application/json'},data:data?JSON.stringify(data):undefined,timeout:20000,onload:r=>{try{resolve(JSON.parse(r.responseText))}catch{resolve({ok:false,error:'bad json'})}},onerror:e=>resolve({ok:false,error:String(e)}),ontimeout:()=>resolve({ok:false,error:'timeout'})})})}
+  function req(method,path,data){return new Promise(resolve=>{GM_xmlhttpRequest({method,url:BASE+path,headers:{'Content-Type':'application/json'},data:data?JSON.stringify(data):undefined,timeout:20000,onload:r=>{try{resolve(JSON.parse(r.responseText))}catch{resolve({ok:false,error:'bad json'})}},onerror:e=>{ debugAdd(method+' '+path,String(e),false); resolve({ok:false,error:String(e)}); },ontimeout:()=>{ debugAdd(method+' '+path,'timeout',false); resolve({ok:false,error:'timeout'}); }})})}
+
+  function debugHistory(){ return safeJson(GM_getValue(KEY.debug,'[]')) || []; }
+  function debugAdd(type, detail, ok=true){
+    if(!isAdmin()) return;
+    const rows=debugHistory();
+    rows.unshift({ts:Date.now(),time:new Date().toLocaleTimeString(),type:String(type||'log'),ok:!!ok,detail:String(detail||'').slice(0,180)});
+    GM_setValue(KEY.debug,JSON.stringify(rows.slice(0,60)));
+  }
+  function debugClear(){ GM_setValue(KEY.debug,'[]'); renderPanel(); }
+  function debugRowsHtml(){
+    const rows=debugHistory().slice(0,18);
+    if(!rows.length) return '<div class="absp330-debug-empty">No debug history yet. Open a profile, attack log, or tap Repaint.</div>';
+    return rows.map(r=>`<div class="absp330-debug-row ${r.ok?'ok':'bad'}"><span>${esc(r.time)}</span><b>${esc(r.type)}</b><em>${esc(r.detail)}</em></div>`).join('');
+  }
+
   function cache(){return safeJson(GM_getValue(KEY.cache,'{}'))||{}} function getIntel(id){return id?cache()[String(id)]||null:null} function saveIntel(id,intel){if(!id||!intel)return;const c=cache();c[String(id)]={...intel,user_id:Number(id),saved_at:Date.now()};GM_setValue(KEY.cache,JSON.stringify(c))} function sentMap(){return safeJson(GM_getValue(KEY.sent,'{}'))||{}} function canSend(id,src){const s=sentMap();return Date.now()-(s[id+':'+src]||0)>21600000} function markSent(id,src){const s=sentMap();s[id+':'+src]=Date.now();GM_setValue(KEY.sent,JSON.stringify(s))}
   function diff(total,label){const l=String(label||'').toLowerCase();if(l.includes('avoid'))return'avoid';if(l.includes('difficult')||l.includes('hard'))return'difficult';if(l.includes('good'))return'good';if(l.includes('fair'))return'fair';if(l.includes('easy'))return'easy';if(total&&state.total){const r=Number(total)/Number(state.total);if(r<=.75)return'easy';if(r<=1.15)return'fair';if(r<=1.35)return'good';if(r<=1.75)return'difficult';return'avoid'}return'unknown'}
   function riskConfidence(intel){let conf=Number(intel?.confidence||0);const total=Number(intel?.best_total||intel?.total||0);if(!total||!state.total)return conf;const src=String(intel?.source||'').toLowerCase();const exact=/spy|manual|exact/.test(src);const ratio=total/state.total;if(exact)return Math.max(1,Math.min(100,Math.round(conf||80)));const cap=ratio>=20?18:ratio>=10?25:ratio>=5?35:ratio>=2.5?45:ratio>=1.75?55:ratio>=1.15?65:78;return Math.max(1,Math.min(100,Math.round(Math.min(conf||cap,cap))))}
   function isBadContainer(el){if(!el)return true;for(let n=el,i=0;n&&n!==document.body&&i<10;n=n.parentElement,i++){const cls=String(n.className||'').toLowerCase();const id=String(n.id||'').toLowerCase();const aria=String(n.getAttribute?.('aria-label')||'').toLowerCase();const t=cleanText(n);if(n.closest?.('#absp330-panel,.absp330-pop'))return true;if(/chat|message|msg|conversation|channel|compose|textarea|chatbox|tooltip|tip|popover|dialog|modal|dropdown|profile-mini|preview|hover/.test(cls+' '+id+' '+aria))return true;if(/Type your message here|Last message:|New message|Cash Me if You Can|Best of the Lot/i.test(t))return true}return false} function visible(el){const r=el?.getBoundingClientRect?.();return!!(r&&r.width>0&&r.height>0&&r.bottom>-100&&r.top<innerHeight+600)} function pageProfile(){return location.href.startsWith('https://www.torn.com/profiles.php')} function currentProfileId(){return pageProfile()?(extractId(location.href)||extractId(document.body?.innerHTML||'')):null}
   function bspIntel(id){for(const k of['tdup.battleStatsPredictor.cache.prediction.'+id,'BSP_prediction_'+id,'battleStatsPredictor_'+id]){try{const raw=localStorage.getItem(k)||GM_getValue(k,'');if(!raw)continue;const p=JSON.parse(raw);const n=parseNum(p.TBS||p.TargetTBS||p.bs_estimate||p.estimate||p.total||p.Total);if(n)return{total:n,best_total:n,label:diff(n),confidence:66,source:'bsp_cache'}}catch{}}return null}
   function visibleIntel(){const body=(document.body?.innerText||'').replace(/\s+/g,' ');const m=body.match(/Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i)||body.match(/Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i);const n=m?parseNum(m[1]):0;return n?{total:n,best_total:n,label:diff(n),confidence:68,source:'visible_ff_bsp'}:null}
-  function shareIntel(id,intel,name=''){if(!id||!intel?.total)return;const src=intel.source||'shared';if(!canSend(id,src))return;markSent(id,src);req('POST','/api/estimate/manual',{target_id:id,target_name:name,estimate_total:intel.total,your_total:state.total,confidence:riskConfidence(intel)||60,source:src,source_detail:'shared by ABSP '+VERSION}).then(r=>{if(r?.ok&&r.player){saveIntel(id,r.player);schedule(300)}})}
+  function shareIntel(id,intel,name=''){if(!id||!intel?.total){debugAdd('share skip','missing target/total',false);return;}const src=intel.source||'shared';if(!canSend(id,src)){debugAdd('share skip',id+' '+src+' cooldown');return;}markSent(id,src);debugAdd('share send','target '+id+' '+src+' total '+fmt(intel.total||intel.best_total||0));req('POST','/api/estimate/manual',{target_id:id,target_name:name,estimate_total:intel.total,your_total:state.total,confidence:riskConfidence(intel)||60,source:src,source_detail:'shared by ABSP '+VERSION}).then(r=>{if(r?.ok&&r.player){saveIntel(id,r.player);schedule(300)}})}
   function addTarget(out,seen,id,mount,type){if(!id||!mount||isBadContainer(mount)||!visible(mount))return;const r=mount.getBoundingClientRect();const key=type+':'+id+':'+Math.round(r.top/10)+':'+Math.round(r.left/10);if(seen.has(key))return;seen.add(key);out.push({id:Number(id),mount,type})}
   function collectTargets(root=document){const out=[],seen=new Set();if(pageProfile()){const pid=currentProfileId();if(pid){const m=document.querySelector('.buttons-wrap')||document.querySelector('.user-information');if(m)addTarget(out,seen,pid,m,'profile');return out}} if(/loader\.php\?sid=attack|page\.php\?sid=attack/i.test(location.href)){const id=extractId(location.href);const m=Array.from(document.querySelectorAll('*')).find(e=>String(e.className).includes('titleContainer'));if(id&&m)addTarget(out,seen,id,m,'attack');return out} root.querySelectorAll?.('.target.left').forEach(t=>{const a=t.querySelector('a[href*="XID="]');const id=extractId(a?.href);if(id)addTarget(out,seen,id,t,'bounty')});root.querySelectorAll?.('a[href*="profiles.php?XID="],a[href^="/profiles.php?"],a[href*="XID="]').forEach(a=>{if(isBadContainer(a)||!visible(a))return;const id=extractId(a.href||a.getAttribute('href'));if(!id)return;const p=a.parentNode;if(p&&String(p.className).includes('honorWrap'))return addTarget(out,seen,id,p,'honorWrap');if(p&&String(p.className).includes('dataGridData'))return addTarget(out,seen,id,p,'dataGridData');if(a.rel==='noopener noreferrer'||String(a.className)==='user name ')return addTarget(out,seen,id,a,'link');for(const c of a.children){if(c.tagName==='IMG')return addTarget(out,seen,id,c,'img');const cls=String(c.className||'').toLowerCase();const st=String(c.getAttribute?.('style')||'').toLowerCase();if(cls.includes('honor')||cls.includes('name')||st.includes('background-image')||c.querySelector?.('img'))return addTarget(out,seen,id,c,'child')}});root.querySelectorAll?.('.user.name').forEach(e=>{const m=(e.innerHTML||e.title||'').match(/\[(\d{3,10})\]/);if(m)addTarget(out,seen,Number(m[1]),e,'username')});return out}
   function marginFor(type,mount){if(type==='profile')return'';if(location.href.includes('hospitalview'))return'0px 6px';if(location.href.includes('forums.php#/p=threads'))return'-26px 28px';if(location.href.includes('factions.php')&&mount.className==='user name ')return'-28px 54px';return'-10px -9px'}
@@ -113,7 +129,7 @@
   }
 
   function shareAutoTraits(targetId, intel){
-    if(!targetId) return;
+    if(!targetId){debugAdd('attack log','no target id found',false);return;}
     const traits = autoTraitIntel();
     if(!traits.armor_seen && !traits.temp_used_often) return;
     req('POST','/api/estimate/manual', {
@@ -206,6 +222,14 @@
           <b>🔑 API & Storage</b>
           <p>Use a <b>limited Torn API key</b>. No password is requested. Your key is saved locally in PDA/browser storage. Shared prediction data is stored by target ID for estimate support only.</p>
         </div>
+        ${isAdmin() ? `
+        <div class="absp330-card absp330-compact-card">
+          <b>🛠️ Admin Debug History</b>
+          <p>Admin-only backend send/fetch history. Hidden for normal users.</p>
+          <button id="absp330-debug-refresh">Refresh</button>
+          <button id="absp330-debug-clear">Clear</button>
+          <div class="absp330-debug">${debugRowsHtml()}</div>
+        </div>` : ``}
 
         <div class="absp330-card absp330-login-card">
           <b>🍽️ Login</b>
@@ -213,13 +237,15 @@
           <label style="display:block;margin:6px 0;color:#dbeafe"><input id="absp330-ff" type="checkbox" ${state.ff?'checked':''} style="width:auto"> Use visible estimates when available</label>
           <button id="absp330-login">Save</button>
           <button id="absp330-repaint">Repaint</button>
-          <div class="absp330-status">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}` : 'Not logged in'}</div>
+          <div class="absp330-status">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}${isAdmin()?' • Admin':''}` : 'Not logged in'}</div>
         </div>
       </div>`;
 
     p.querySelector('#absp330-close').onclick=()=>{ state.panelOpen=false; renderPanel(); };
     p.querySelector('#absp330-login').onclick=login;
-    p.querySelector('#absp330-repaint').onclick=()=>schedule(50);
+    p.querySelector('#absp330-repaint').onclick=()=>{ debugAdd('manual','repaint clicked'); schedule(50); };
+    const dbgRefresh=p.querySelector('#absp330-debug-refresh'); if(dbgRefresh) dbgRefresh.onclick=()=>renderPanel();
+    const dbgClear=p.querySelector('#absp330-debug-clear'); if(dbgClear) dbgClear.onclick=debugClear;
     mountIcon();
   }
 
@@ -259,7 +285,7 @@
     const pageText=(document.body?.innerText||'');
     const isFight=/loader\.php\?sid=attack|attack log|Attacking|initiated an attack|lost to|fired .* rounds|threw .* grenade/i.test(location.href+' '+document.title+' '+pageText.slice(0,1600));
     if(!isFight) return;
-    if(!state.user?.user_id || !state.total) return;
+    if(!state.user?.user_id || !state.total){debugAdd('attack log','not logged in',false);return;}
     const text=pageText.replace(/\s+/g,' ');
     const targetId=lastAttackTarget();
     if(!targetId) return;
@@ -267,7 +293,7 @@
     const temp=detectTempFromLog(text);
     const armor=detectArmorFromLog(text);
     const bucket=Math.floor(Date.now()/600000);
-    if(result){
+    if(result){debugAdd('attack log','detected '+result+' target '+targetId);
       const feedKey='absp_auto_fight_'+targetId+'_'+result+'_'+bucket;
       if(!GM_getValue(feedKey,'')){
         GM_setValue(feedKey,'1');
@@ -283,7 +309,7 @@
         }).then(r=>{if(r?.ok&&r.player){saveIntel(targetId,r.player);schedule(150);}});
       }
     }
-    if(temp || armor){
+    if(temp || armor){debugAdd('traits','detected '+(temp||'')+' '+(armor||'')+' target '+targetId);
       const traitKey='absp_auto_trait_'+targetId+'_'+temp+'_'+armor+'_'+Math.floor(Date.now()/3600000);
       if(!GM_getValue(traitKey,'')){
         GM_setValue(traitKey,'1');
