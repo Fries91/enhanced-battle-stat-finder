@@ -1,906 +1,806 @@
 // ==UserScript==
-// @name         Advanced Battle Stat Predictor
-// @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.1.2
-// @description  BSP-style name-strip build: uses XID/user2ID to identify players but attaches badges only to the player honor/name strip, never action buttons or score columns.
+// @name         Torn Stat Predictor - Auto BSP Style
+// @namespace    Fries91.Torn.StatPredictor.AutoBSP
+// @version      2.5.0
+// @description  Auto-learns visible enemy stat estimates and shows BSP-style prediction badges beside player names.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @connect      enhanced-battle-stat-finder.onrender.com
+// @connect      api.torn.com
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
+  const VERSION = '2.5.0';
 
-  const K = {
-    api: 'absp_key',
-    user: 'absp_user',
-    total: 'absp_total',
-    stats: 'absp_stats',
-    cache: 'absp_intel_cache',
-    icon: 'absp_icon_pos',
-    ff: 'absp_ff_enabled'
+  const STORE = {
+    myStats: 'fries_auto_sp_my_effective_stats',
+    enemyStats: 'fries_auto_sp_enemy_stats',
+    lastApiPull: 'fries_auto_sp_last_api_pull',
+    panelOpen: 'fries_auto_sp_panel_open'
   };
 
-  const state = {
-    key: GM_getValue(K.api, '') || GM_getValue('ebsf2_key', ''),
-    user: safeJson(GM_getValue(K.user, 'null')) || safeJson(GM_getValue('ebsf2_user', 'null')),
-    total: Number(GM_getValue(K.total, 0) || GM_getValue('ebsf2_total', 0) || 0),
-    stats: safeJson(GM_getValue(K.stats, '{}')) || {},
-    ff: !!GM_getValue(K.ff, true),
-    open: false,
-    pending: false,
-    lastPaint: 0
-  };
+  const BADGE_CLASS = 'fries-auto-sp-badge';
+  const MOUNTED_ATTR = 'data-fries-auto-sp-mounted';
 
   GM_addStyle(`
-    .ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge,.absp-hb-badge,.absp3-badge,.absp31-badge{display:none!important;visibility:hidden!important;pointer-events:none!important}
-
-    .absp-bsp-badge{
-      display:inline-flex!important;
-      align-items:center!important;
-      justify-content:center!important;
-      vertical-align:middle!important;
-      min-width:34px!important;
-      max-width:64px!important;
-      height:15px!important;
-      margin-left:4px!important;
-      padding:0 5px!important;
-      border-radius:6px!important;
-      border:1px solid #64748b!important;
-      background:#111827!important;
-      color:#cbd5e1!important;
-      font:900 10px/1 Arial,sans-serif!important;
-      box-shadow:0 1px 4px #000b!important;
-      white-space:nowrap!important;
-      overflow:hidden!important;
-      cursor:pointer!important;
-      pointer-events:auto!important;
-      position:relative!important;
-      z-index:8!important;
+    .${BADGE_CLASS} {
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      margin-left: 5px !important;
+      padding: 1px 6px !important;
+      min-height: 14px !important;
+      border-radius: 4px !important;
+      font-size: 10px !important;
+      line-height: 14px !important;
+      font-weight: 900 !important;
+      font-family: Arial, Helvetica, sans-serif !important;
+      vertical-align: middle !important;
+      border: 1px solid rgba(255,255,255,.16) !important;
+      box-shadow: 0 1px 2px rgba(0,0,0,.35) !important;
+      white-space: nowrap !important;
+      text-decoration: none !important;
+      cursor: help !important;
     }
 
-    .absp-bsp-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .absp-bsp-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
-    .absp-bsp-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .absp-bsp-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    .absp-bsp-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
-
-    #absp-bsp-main{
-      display:none;position:fixed;left:16px;bottom:116px;z-index:999996;
-      width:42px;height:42px;border-radius:10px;border:1px solid #806500;
-      background:#111827;color:#fde68a;font-size:22px;box-shadow:0 2px 10px #000c;touch-action:none
+    .${BADGE_CLASS}.easy {
+      background: #064e3b !important;
+      color: #d1fae5 !important;
+      border-color: #10b981 !important;
     }
 
-    #absp-bsp-panel{
-      position:fixed;left:8px;right:8px;top:74px;bottom:66px;z-index:999997;
-      background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);
-      color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;
-      box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none
+    .${BADGE_CLASS}.fair {
+      background: #1e3a8a !important;
+      color: #dbeafe !important;
+      border-color: #60a5fa !important;
     }
-    #absp-bsp-panel.open{display:block}
-    #absp-bsp-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}
-    #absp-bsp-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}
-    #absp-bsp-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}
-    #absp-bsp-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
-    .absp-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35);margin-bottom:10px}
-    .absp-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase}
-    .absp-card p,.absp-card li{color:#dbeafe;line-height:1.42}
-    .absp-card ul{margin:7px 0 0 18px;padding:0}
-    .absp-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9))}
-    .absp-hero-title{font-size:22px;font-weight:1000;color:#facc15;text-transform:uppercase}
-    .absp-chip{display:inline-flex;margin:7px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}
 
-    .absp-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:255px;font:12px Arial,sans-serif;overflow:hidden}
-    .absp-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}
-    .absp-pop-head button{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important}
-    .absp-pop-body{padding:10px;line-height:1.45}
-    .absp-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}
-    .absp-red{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}
-    .absp-orange{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}
-    .absp-yellow{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}
-    .absp-green{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}
-    .absp-blue{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}
-    .absp-grey{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
-    .absp-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px}
-    .absp-grid div{background:#111827;border:1px solid #334155;border-radius:8px;padding:5px;display:flex;justify-content:space-between}
+    .${BADGE_CLASS}.good {
+      background: #713f12 !important;
+      color: #fef3c7 !important;
+      border-color: #facc15 !important;
+    }
+
+    .${BADGE_CLASS}.hard {
+      background: #7c2d12 !important;
+      color: #ffedd5 !important;
+      border-color: #fb923c !important;
+    }
+
+    .${BADGE_CLASS}.avoid {
+      background: #7f1d1d !important;
+      color: #fee2e2 !important;
+      border-color: #ef4444 !important;
+    }
+
+    .${BADGE_CLASS}.unknown {
+      background: #111827 !important;
+      color: #e5e7eb !important;
+      border-color: #6b7280 !important;
+    }
+
+    #fries-auto-sp-toggle {
+      position: fixed;
+      left: 10px;
+      bottom: 76px;
+      z-index: 999999;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #0b0f17;
+      color: #facc15;
+      border: 1px solid rgba(250,204,21,.6);
+      box-shadow: 0 8px 24px rgba(0,0,0,.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 17px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    #fries-auto-sp-panel {
+      position: fixed;
+      left: 10px;
+      bottom: 116px;
+      z-index: 999999;
+      width: min(340px, calc(100vw - 20px));
+      background: #0b0f17;
+      color: #f9fafb;
+      border: 1px solid rgba(250,204,21,.45);
+      border-radius: 14px;
+      box-shadow: 0 16px 44px rgba(0,0,0,.55);
+      font-family: Arial, Helvetica, sans-serif;
+      display: none;
+      overflow: hidden;
+    }
+
+    #fries-auto-sp-panel.open {
+      display: block;
+    }
+
+    .fries-auto-sp-head {
+      padding: 11px 12px;
+      background: linear-gradient(135deg, #111827, #171717);
+      border-bottom: 1px solid rgba(250,204,21,.25);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .fries-auto-sp-title {
+      font-size: 13px;
+      font-weight: 900;
+      color: #facc15;
+    }
+
+    .fries-auto-sp-sub {
+      font-size: 10px;
+      color: #9ca3af;
+      margin-top: 2px;
+    }
+
+    .fries-auto-sp-close {
+      border: 1px solid rgba(255,255,255,.14);
+      background: #1f2937;
+      color: #f9fafb;
+      border-radius: 8px;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-weight: 900;
+    }
+
+    .fries-auto-sp-body {
+      padding: 10px;
+    }
+
+    .fries-auto-sp-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+    }
+
+    .fries-auto-sp-pill {
+      background: #030712;
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 10px;
+      padding: 8px 5px;
+      text-align: center;
+    }
+
+    .fries-auto-sp-pill strong {
+      display: block;
+      color: #facc15;
+      font-size: 13px;
+    }
+
+    .fries-auto-sp-pill span {
+      display: block;
+      color: #9ca3af;
+      font-size: 9px;
+      margin-top: 2px;
+    }
+
+    .fries-auto-sp-help {
+      margin-top: 9px;
+      background: rgba(17,24,39,.85);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 10px;
+      padding: 8px;
+      color: #d1d5db;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .fries-auto-sp-btn {
+      margin-top: 8px;
+      width: 100%;
+      border: 1px solid rgba(250,204,21,.4);
+      background: #171717;
+      color: #facc15;
+      border-radius: 9px;
+      padding: 8px;
+      font-weight: 900;
+      font-size: 12px;
+      cursor: pointer;
+    }
   `);
 
-  function safeJson(s){ try { return JSON.parse(s); } catch { return null; } }
-  function esc(s){ return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
-  function txt(el){ return (el?.textContent || '').replace(/\s+/g,' ').trim(); }
-  function fmt(n){
+  function getVal(key, fallback) {
+    try {
+      const v = GM_getValue(key);
+      return v === undefined ? fallback : v;
+    } catch (e) {
+      return fallback;
+    }
+  }
+
+  function setVal(key, value) {
+    try {
+      GM_setValue(key, value);
+    } catch (e) {}
+  }
+
+  function parseNum(value) {
+    if (value === null || value === undefined) return 0;
+
+    let text = String(value).trim().toLowerCase();
+
+    let mult = 1;
+    if (text.includes('b')) mult = 1000000000;
+    else if (text.includes('m')) mult = 1000000;
+    else if (text.includes('k')) mult = 1000;
+
+    text = text.replace(/[^\d.]/g, '');
+    const n = Number(text) || 0;
+
+    return Math.round(n * mult);
+  }
+
+  function fmt(n) {
     n = Number(n || 0);
-    if(n >= 1e12) return (n/1e12).toFixed(1).replace('.0','') + 't';
-    if(n >= 1e9) return (n/1e9).toFixed(1).replace('.0','') + 'b';
-    if(n >= 1e6) return (n/1e6).toFixed(1).replace('.0','') + 'm';
-    if(n >= 1e3) return (n/1e3).toFixed(1).replace('.0','') + 'k';
-    return String(Math.round(n));
+    if (!n) return '0';
+    return n.toLocaleString();
   }
-  function parseNum(v){
-    const m = String(v ?? '').toLowerCase().replace(/,/g,'').match(/([0-9]+(?:\.[0-9]+)?)\s*([kmbt])?/);
-    if(!m) return 0;
-    let n = Number(m[1]);
-    if(m[2] === 'k') n *= 1e3;
-    if(m[2] === 'm') n *= 1e6;
-    if(m[2] === 'b') n *= 1e9;
-    if(m[2] === 't') n *= 1e12;
-    return Math.round(n);
+
+  function short(n) {
+    n = Number(n || 0);
+    if (n >= 1000000000) return `${(n / 1000000000).toFixed(1)}B`;
+    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return String(n || 0);
   }
-  function extractId(blob){
-    blob = String(blob || '');
-    let m = blob.match(/profiles\.php\?XID=(\d{3,10})/i);
-    if(m) return Number(m[1]);
-    m = blob.match(/(?:XID|user2ID|userID|targetID|profileId|targetId|data-userid|data-user|data-id)[=\\"':%26 ]+(\d{3,10})/i);
-    if(m) return Number(m[1]);
-    m = blob.match(/sid=attack[^"'<>]*?(?:user2ID=|XID=)?(\d{3,10})/i);
-    if(m) return Number(m[1]);
+
+  function cleanName(text) {
+    return String(text || '')
+      .replace(/\[[^\]]+\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function getXid(link) {
+    if (!link || !link.href) return null;
+
+    const a = link.href.match(/[?&]XID=(\d+)/i);
+    if (a) return a[1];
+
+    const b = link.href.match(/profiles\.php.*?(\d{4,})/i);
+    if (b) return b[1];
+
     return null;
   }
 
-  function cache(){ return safeJson(GM_getValue(K.cache, '{}')) || {}; }
-  function getIntel(id){ return id ? cache()[String(id)] || null : null; }
-  function saveIntel(id, intel){
-    if(!id || !intel) return;
-    const c = cache();
-    c[String(id)] = {...intel, confidence:riskConfidence(intel), user_id:Number(id), saved_at:Date.now()};
-    GM_setValue(K.cache, JSON.stringify(c));
+  function loadEnemies() {
+    const data = getVal(STORE.enemyStats, {});
+    return data && typeof data === 'object' ? data : {};
   }
 
-  function req(method, path, data){
-    return new Promise(resolve => {
-      GM_xmlhttpRequest({
-        method, url: BASE + path,
-        headers: {'Content-Type':'application/json'},
-        data: data ? JSON.stringify(data) : undefined,
-        timeout: 20000,
-        onload: r => { try { resolve(JSON.parse(r.responseText)); } catch { resolve({ok:false,error:'bad json'}); } },
-        onerror: e => resolve({ok:false,error:String(e)}),
-        ontimeout: () => resolve({ok:false,error:'timeout'})
-      });
+  function saveEnemies(data) {
+    setVal(STORE.enemyStats, data || {});
+  }
+
+  function getMyStats() {
+    return Number(getVal(STORE.myStats, 0)) || 0;
+  }
+
+  function saveMyStats(total) {
+    total = Number(total || 0);
+    if (total > 0) setVal(STORE.myStats, total);
+  }
+
+  function classify(enemyStats, myStats) {
+    enemyStats = Number(enemyStats || 0);
+    myStats = Number(myStats || 0);
+
+    if (!enemyStats || !myStats) {
+      return {
+        tier: 'unknown',
+        label: '?',
+        ratio: 0
+      };
+    }
+
+    const ratio = enemyStats / myStats;
+
+    if (ratio <= 0.90) return { tier: 'easy', label: 'Easy', ratio };
+    if (ratio <= 1.10) return { tier: 'fair', label: 'Fair', ratio };
+    if (ratio <= 1.25) return { tier: 'good', label: 'Good', ratio };
+    if (ratio <= 1.50) return { tier: 'hard', label: 'Hard', ratio };
+
+    return { tier: 'avoid', label: 'Avoid', ratio };
+  }
+
+  function findExistingApiKey() {
+    const possibleKeys = [
+      'fries_api_key',
+      'friesApiKey',
+      'FRIES_API_KEY',
+      'torn_api_key',
+      'tornApiKey',
+      'TornApiKey',
+      'apiKey',
+      'API_KEY',
+      'yata_api_key',
+      'bsp_api_key',
+      'ffscout_api_key',
+      'fries-war-hub-api-key',
+      'fries_torn_key',
+      'fries_limited_key'
+    ];
+
+    for (const key of possibleKeys) {
+      try {
+        const gm = GM_getValue(key);
+        if (looksLikeApiKey(gm)) return String(gm).trim();
+      } catch (e) {}
+
+      try {
+        const ls = localStorage.getItem(key);
+        if (looksLikeApiKey(ls)) return String(ls).trim();
+      } catch (e) {}
+
+      try {
+        const ss = sessionStorage.getItem(key);
+        if (looksLikeApiKey(ss)) return String(ss).trim();
+      } catch (e) {}
+    }
+
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        const v = localStorage.getItem(k);
+
+        if (/api|key|torn/i.test(k) && looksLikeApiKey(v)) {
+          return String(v).trim();
+        }
+      }
+    } catch (e) {}
+
+    return '';
+  }
+
+  function looksLikeApiKey(value) {
+    if (!value) return false;
+    const s = String(value).trim();
+    return /^[A-Za-z0-9]{12,32}$/.test(s);
+  }
+
+  function autoPullMyStatsFromTornApi() {
+    const last = Number(getVal(STORE.lastApiPull, 0)) || 0;
+    const now = Date.now();
+
+    if (now - last < 1000 * 60 * 20) return;
+
+    const key = findExistingApiKey();
+    if (!key) return;
+
+    setVal(STORE.lastApiPull, now);
+
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: `https://api.torn.com/user/?selections=battlestats&key=${encodeURIComponent(key)}`,
+      timeout: 15000,
+      onload: function (res) {
+        try {
+          const data = JSON.parse(res.responseText || '{}');
+
+          if (data.error) return;
+
+          const str = Number(data.strength || 0);
+          const def = Number(data.defense || data.defence || 0);
+          const spd = Number(data.speed || 0);
+          const dex = Number(data.dexterity || 0);
+
+          const total = str + def + spd + dex;
+
+          if (total > 0) {
+            saveMyStats(total);
+            rescanAll();
+          }
+        } catch (e) {}
+      }
     });
   }
 
-  function diff(total, label){
-    const l = String(label || '').toLowerCase();
-    if(l.includes('avoid')) return 'avoid';
-    if(l.includes('difficult') || l.includes('hard')) return 'difficult';
-    if(l.includes('fair') || l.includes('good')) return 'fair';
-    if(l.includes('easy')) return 'easy';
-    if(total && state.total){
-      const r = Number(total) / Number(state.total);
-      if(r <= .75) return 'easy';
-      if(r <= 1.15) return 'fair';
-      if(r <= 1.75) return 'difficult';
-      return 'avoid';
+  function autoReadMyStatsFromVisiblePage() {
+    const body = document.body ? document.body.innerText || '' : '';
+    if (!body) return;
+
+    const strength = matchStat(body, /strength\s*[:\s]+([\d,.]+[kmb]?)/i);
+    const defense = matchStat(body, /defen[cs]e\s*[:\s]+([\d,.]+[kmb]?)/i);
+    const speed = matchStat(body, /speed\s*[:\s]+([\d,.]+[kmb]?)/i);
+    const dexterity = matchStat(body, /dexterity\s*[:\s]+([\d,.]+[kmb]?)/i);
+
+    const total = strength + defense + speed + dexterity;
+
+    if (total > 0) {
+      saveMyStats(total);
     }
-    return 'unknown';
   }
 
-  function riskConfidence(intel){
-    let conf = Number(intel?.confidence || 0);
-    const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total || !state.total) return conf;
-    const exact = /spy|manual|exact/i.test(String(intel?.source || ''));
-    const ratio = total / state.total;
-    if(exact){
-      if(ratio >= 10) conf = Math.min(conf || 75, 75);
-      else if(ratio >= 5) conf = Math.min(conf || 80, 80);
-      return Math.max(1, Math.min(100, Math.round(conf)));
-    }
-    let cap = 78;
-    if(ratio >= 20) cap = 18;
-    else if(ratio >= 10) cap = 25;
-    else if(ratio >= 5) cap = 35;
-    else if(ratio >= 2.5) cap = 45;
-    else if(ratio >= 1.75) cap = 55;
-    else if(ratio >= 1.15) cap = 65;
-    return Math.max(1, Math.min(100, Math.round(Math.min(conf || cap, cap))));
+  function matchStat(text, regex) {
+    const m = text.match(regex);
+    if (!m || !m[1]) return 0;
+    return parseNum(m[1]);
   }
 
-  function confColor(c){
-    c = Number(c || 0);
-    if(c >= 66) return 'green';
-    if(c >= 46) return 'yellow';
-    if(c >= 26) return 'orange';
-    return 'red';
+  function isUsefulArea(link) {
+    return !!link.closest(`
+      tr,
+      li,
+      [class*="member"],
+      [class*="Member"],
+      [class*="enemy"],
+      [class*="Enemy"],
+      [class*="war"],
+      [class*="War"],
+      [class*="faction"],
+      [class*="Faction"],
+      [class*="user"],
+      [class*="User"],
+      [class*="table"],
+      [class*="Table"],
+      [class*="row"],
+      [class*="Row"],
+      [class*="profile"],
+      [class*="Profile"]
+    `);
   }
 
-  function bspIntel(id){
-    if(!id) return null;
-    const keys = [
-      'tdup.battleStatsPredictor.cache.prediction.' + id,
-      'BSP_prediction_' + id,
-      'battleStatsPredictor_' + id
-    ];
-    for(const k of keys){
-      try{
-        const raw = localStorage.getItem(k) || GM_getValue(k, '');
-        if(!raw) continue;
-        const p = JSON.parse(raw);
-        const n = parseNum(p.TBS || p.TargetTBS || p.bs_estimate || p.estimate || p.total || p.Total);
-        if(n) return {total:n,best_total:n,label:diff(n),confidence:65,source:'bsp_cache'};
-      }catch {}
-    }
-    return null;
-  }
+  function shouldSkipLink(link) {
+    if (!link) return true;
+    if (link.getAttribute(MOUNTED_ATTR) === '1') return true;
+    if (!link.href || !link.href.includes('profiles.php')) return true;
+    if (!getXid(link)) return true;
 
-  function visibleIntel(){
-    const body = (document.body?.innerText || '').replace(/\s+/g, ' ');
-    const m = body.match(/Est\.?\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i) || body.match(/Estimated\s*Stats:\s*([0-9.,]+\s*[kmbt]?)/i);
-    if(!m) return null;
-    const n = parseNum(m[1]);
-    return n ? {total:n,best_total:n,label:diff(n),confidence:70,source:'visible_ff_bsp'} : null;
-  }
+    const name = cleanName(link.textContent);
+    if (!name || name.length < 2) return true;
 
-  function isBadArea(el){
-    let n = el;
-    for(let i=0; i<10 && n && n !== document.body; i++, n=n.parentElement){
-      const cls = String(n.className || '').toLowerCase();
-      const id = String(n.id || '').toLowerCase();
-      const role = String(n.getAttribute?.('role') || '').toLowerCase();
-      const aria = String(n.getAttribute?.('aria-label') || '').toLowerCase();
-      const t = txt(n);
+    const bad = link.closest(`
+      #top-page-links-list,
+      .top_header,
+      .header-wrapper,
+      .menu,
+      .sidebar,
+      .chat-box,
+      .chat-box-wrap,
+      [class*="chat"],
+      [class*="Chat"],
+      [class*="header"],
+      [class*="Header"]
+    `);
 
-      if(n.closest?.('#absp-bsp-panel,.absp-pop')) return true;
+    if (bad) return true;
+    if (!isUsefulArea(link)) return true;
 
-      // Hard block all Torn/PDA chat/message containers.
-      if(/chat|message|msg|conversation|channel|compose|textarea|input-wrapper|chatbox|chat-box|chat_list|chat-list|chatwindow|chat-window/.test(cls + ' ' + id + ' ' + role + ' ' + aria)) return true;
-      if(/Type your message here|Last message:|Faction\s*$|Company\s*$|Trade\s*$|Global\s*$|Private\s*$|send message|New message/i.test(t)) return true;
-
-      // Block hover/profile cards/popups so badges do not get copied there.
-      if(/tooltip|tip|popover|dialog|modal|profile-mini|preview|hover|dropdown|context/.test(cls + ' ' + id + ' ' + role + ' ' + aria)) return true;
-      if(/Featuring the|uploaded images/i.test(t) && t.length < 260) return true;
-
-      // Block crimes/home/profile panels that contain player-looking links but are not list/player rows.
-      if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|CAR THIEF|JOIN|24hrs/i.test(t)) return true;
-      if(/Battle Stats|Strength|Defense|Speed|Dexterity|Job Information|Property Information|Company|Income|Fees|Rating/i.test(t)) return true;
-
-      // Block war/header panels, not actual rows.
-      if(/Members\s+Score\s+Status\s+Attack|Lead Target|No active chain|Chain active|Your faction is not in a war/i.test(t) && t.length < 350) return true;
-
-      // Block top/bottom Torn navigation.
-      if(/Messages|Events|Awards|Home|Items|City|Wheel|Stocks/i.test(t) && t.length < 100) return true;
-    }
     return false;
   }
 
-  function isAttackOnlyLink(a){
-    const blob = [a.href, a.getAttribute('href'), a.getAttribute('onclick'), a.textContent].filter(Boolean).join(' ');
-    if(/sid=attack|user2ID/i.test(blob) && !/profiles\.php|XID=/i.test(blob)) return true;
-    return false;
+  function findRow(link) {
+    return link.closest(`
+      tr,
+      li,
+      [class*="member"],
+      [class*="Member"],
+      [class*="enemy"],
+      [class*="Enemy"],
+      [class*="war"],
+      [class*="War"],
+      [class*="faction"],
+      [class*="Faction"],
+      [class*="user"],
+      [class*="User"],
+      [class*="table"],
+      [class*="Table"],
+      [class*="row"],
+      [class*="Row"]
+    `);
   }
 
-  function playerIdFromLink(a){
-    return extractId([a.href, a.getAttribute('href'), a.getAttribute('onclick'), a.dataset?.userid, a.dataset?.user].filter(Boolean).join(' '));
-  }
+  function findVisibleEnemyEstimate(link) {
+    const row = findRow(link);
+    if (!row) return null;
 
-  function isProfilePage(){
-    const body = (document.body?.innerText || '').slice(0, 5000);
-    if(/Members\s+Score|Status\s+Attack|Lead Target|Chain active|No active chain/i.test(body)) return false;
-    return /profiles\.php/i.test(location.href) || /User Information|Actions|Medals|Awards/i.test(body);
-  }
+    const text = row.innerText || row.textContent || '';
+    const html = row.innerHTML || '';
 
-  function currentProfileId(){
-    if(!isProfilePage()) return null;
-    return extractId(location.href) || extractId(document.body?.innerHTML || '');
-  }
-
-
-  function isActionArea(el){
-    let n = el;
-    for(let i=0; i<6 && n && n !== document.body; i++, n=n.parentElement){
-      const t = txt(n);
-      const cls = String(n.className || '').toLowerCase();
-      const id = String(n.id || '').toLowerCase();
-      if(/actions|action/i.test(t) && t.length < 260) return true;
-      if(/actions|action-buttons|profile-buttons|user-actions/.test(cls + ' ' + id)) return true;
-
-      const buttons = n.querySelectorAll?.('button,a,[onclick]')?.length || 0;
-      const r = n.getBoundingClientRect?.();
-      if(r && buttons >= 6 && r.height < 260 && /Actions/i.test(t)) return true;
-    }
-    return false;
-  }
-
-  function rowForLink(a){
-    let n = a;
-    for(let i=0; i<8 && n && n !== document.body; i++, n=n.parentElement){
-      if(isBadArea(n)) return null;
-      const r = n.getBoundingClientRect?.();
-      if(!r || r.width < 220 || r.height < 22) continue;
-      const t = txt(n);
-      const hasRowWords = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b|Reason:|Level:\s*\d+/i.test(t);
-      const hasId = !!n.querySelector?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]');
-      if(hasId && hasRowWords) return n;
-    }
-    return null;
-  }
-
-  function stripScore(el, row){
-    if(!el || !row) return -999;
-    const er = el.getBoundingClientRect?.();
-    const rr = row.getBoundingClientRect?.();
-    if(!er || !rr) return -999;
-
-    if(er.left > rr.left + rr.width * 0.58) return -999;
-
-    const ratio = er.width / Math.max(1, er.height);
-    if(er.width < 75 || er.width > 360 || er.height < 10 || er.height > 58 || ratio < 2.2) return -999;
-
-    const local = txt(el);
-    if(/Score|Status|Attack|Okay|Members|Level|Rank|Reason/i.test(local) && local.length < 80) return -999;
-
-    const cls = String(el.className || '').toLowerCase();
-    const st = String(el.getAttribute?.('style') || '').toLowerCase();
-
-    let score = 0;
-    if(st.includes('background-image')) score += 55;
-    if(cls.includes('honor')) score += 45;
-    if(cls.includes('name')) score += 35;
-    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) score += 25;
-    if(local && local.length <= 40 && /[a-z0-9_-]{2,}/i.test(local)) score += 20;
-    if(er.width >= 110) score += 12;
-    if(er.height <= 42) score += 10;
-    score += Math.min(35, er.width / 8);
-
-    return score;
-  }
-
-  function findNameStripInRow(row){
-    if(!row || isBadArea(row)) return null;
-
-    const candidates = [
-      ...row.querySelectorAll('a[href*="profiles.php"],a[href*="XID="],[class*="honor"],[class*="name"],[style*="background-image"]')
+    const sources = [
+      { name: 'BSP', regex: /(?:bsp|battle\s*stat\s*predictor)[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'FFS', regex: /(?:ffs|fair\s*fight\s*scout)[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'YATA', regex: /(?:yata)[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'Estimated Stats', regex: /estimated\s*stats?[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'Est Stats', regex: /est\.?\s*stats?[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'Battle Stats', regex: /battle\s*stats?[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'Total Stats', regex: /total\s*stats?[^\d]{0,40}([\d,.]+[kmb]?)/i },
+      { name: 'Stats', regex: /stats?[^\d]{0,20}([\d,.]+[kmb]?)/i }
     ];
 
-    let best = null;
-    let bestScore = -999;
-
-    for(const raw of candidates){
-      if(isBadArea(raw) || isActionArea(raw)) continue;
-
-      let el = raw;
-      for(let depth=0; depth<3 && el && el !== row.parentElement; depth++, el=el.parentElement){
-        if(!el || el === document.body) break;
-        const s = stripScore(el, row);
-        if(s > bestScore){
-          bestScore = s;
-          best = el;
+    for (const source of sources) {
+      const m = text.match(source.regex) || html.match(source.regex);
+      if (m && m[1]) {
+        const n = parseNum(m[1]);
+        if (n >= 1000) {
+          return {
+            estimatedStats: n,
+            source: source.name
+          };
         }
       }
     }
 
-    return bestScore > 0 ? best : null;
+    const dataEstimate = findDataEstimate(row);
+    if (dataEstimate) return dataEstimate;
+
+    const clean = text.replace(/\blevel\b\s*\d+/gi, '');
+    const bigNumbers = clean.match(/(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?[kmb])/gi) || [];
+
+    const candidates = bigNumbers
+      .map(parseNum)
+      .filter(n => n >= 100000)
+      .sort((a, b) => b - a);
+
+    if (candidates.length) {
+      return {
+        estimatedStats: candidates[0],
+        source: 'Visible row'
+      };
+    }
+
+    return null;
   }
 
-  function profileHonorStrip(){
-    if(!isProfilePage()) return null;
+  function findDataEstimate(root) {
+    const nodes = root.querySelectorAll('*');
 
-    const blocks = [...document.querySelectorAll('div,section,li')].filter(el => {
-      const t = txt(el);
-      return /User Information/i.test(t) && !/Actions/i.test(t);
-    });
+    for (const node of nodes) {
+      for (const attr of node.attributes || []) {
+        const name = attr.name || '';
+        const value = attr.value || '';
 
-    const searchRoots = blocks.length ? blocks.slice(0, 3) : [document.body];
-
-    let best = null;
-    let bestScore = -999;
-
-    for(const root of searchRoots){
-      const cands = [...root.querySelectorAll('a[href*="profiles.php"],a[href*="XID="],[class*="honor"],[class*="name"],[style*="background-image"]')];
-      for(const el of cands){
-        if(isBadArea(el) || isActionArea(el)) continue;
-        const r = el.getBoundingClientRect?.();
-        if(!r) continue;
-
-        if(r.top < 300 || r.height > 58 || r.width < 90) continue;
-
-        const ratio = r.width / Math.max(1, r.height);
-        if(ratio < 2.2) continue;
-
-        const cls = String(el.className || '').toLowerCase();
-        const st = String(el.getAttribute?.('style') || '').toLowerCase();
-        let s = 0;
-        if(st.includes('background-image')) s += 60;
-        if(cls.includes('honor')) s += 50;
-        if(cls.includes('name')) s += 35;
-        if(r.height <= 42) s += 15;
-        s += Math.min(40, r.width / 8);
-
-        if(s > bestScore){
-          bestScore = s;
-          best = el;
+        if (/stat|bsp|yata|ffs|estimate/i.test(name + ' ' + value)) {
+          const n = parseNum(value);
+          if (n >= 1000) {
+            return {
+              estimatedStats: n,
+              source: 'Data attribute'
+            };
+          }
         }
       }
     }
 
-    return bestScore > 0 ? best : null;
+    return null;
   }
 
-  function hostForLink(a){
-    if(!a || isBadArea(a) || isActionArea(a)) return null;
+  function learnEnemyFromLink(link) {
+    const xid = getXid(link);
+    const name = cleanName(link.textContent);
 
-    const r = a.getBoundingClientRect?.();
-    if(!r || r.bottom < -80 || r.top > innerHeight + 350) return null;
+    if (!xid || !name) return null;
 
-    // Profile page: never attach to action buttons. Attach only to User Information honor strip.
-    if(isProfilePage()){
-      const strip = profileHonorStrip();
-      if(strip && !isBadArea(strip) && !isActionArea(strip)) return strip;
-      return null;
+    const enemies = loadEnemies();
+
+    const visible = findVisibleEnemyEstimate(link);
+
+    if (visible && visible.estimatedStats) {
+      enemies[xid] = {
+        xid,
+        name,
+        estimatedStats: visible.estimatedStats,
+        source: visible.source,
+        updatedAt: new Date().toLocaleString()
+      };
+
+      saveEnemies(enemies);
+      return enemies[xid];
     }
 
-    const row = rowForLink(a);
-
-    // War/faction/hospital/jail rows: use the left-side player honor/name strip in the row.
-    if(row){
-      const strip = findNameStripInRow(row);
-      if(strip && !isBadArea(strip) && !isActionArea(strip)) return strip;
-      return null;
+    if (enemies[xid]) {
+      return enemies[xid];
     }
 
-    // Non-row profile links only: attach beside the actual text link if it is not an icon/action.
-    if(isAttackOnlyLink(a)) return null;
-
-    const t = txt(a);
-    const ar = a.getBoundingClientRect();
-
-    if(ar.width < 40 || ar.height < 10 || ar.width > 360 || ar.height > 60) return null;
-    if(/^(Messages|Events|Awards|Home|Items|City|Wheel|RR|Stocks)$/i.test(t)) return null;
-
-    return a;
+    return {
+      xid,
+      name,
+      estimatedStats: 0,
+      source: 'Waiting for visible BSP/FFS/YATA data',
+      updatedAt: ''
+    };
   }
 
-  function gatherTargets(){
-    const links = [...document.querySelectorAll(
-      'a[href*="profiles.php?XID="],a[href*="XID="],a[href*="user2ID="],a[href*="sid=attack"]'
-    )];
+  function makeBadge(info) {
+    const myStats = getMyStats();
+    const result = classify(info.estimatedStats, myStats);
 
-    const out = [];
-    const seenHost = new Set();
-    const seenKey = new Set();
-    const seenProfileId = new Set();
+    const badge = document.createElement('span');
+    badge.className = `${BADGE_CLASS} ${result.tier}`;
+    badge.textContent = result.label;
+    badge.dataset.xid = info.xid;
 
-    const profileFallback = currentProfileId();
+    const title = [
+      'Fries91 Auto Stat Predictor',
+      `Player: ${info.name}`,
+      `XID: ${info.xid}`,
+      `Enemy estimate: ${info.estimatedStats ? fmt(info.estimatedStats) : 'unknown'}`,
+      `Your stats: ${myStats ? fmt(myStats) : 'auto-detecting'}`,
+      result.ratio ? `Enemy compared to you: ${(result.ratio * 100).toFixed(1)}%` : '',
+      `Source: ${info.source || 'Unknown'}`,
+      info.updatedAt ? `Updated: ${info.updatedAt}` : ''
+    ].filter(Boolean).join('\n');
 
-    for(const el of links){
-      if(!(el instanceof Element)) continue;
-      if(isBadArea(el)) continue;
+    badge.title = title;
 
-      const id = playerIdFromLink(el) || (isProfilePage() ? profileFallback : null);
-      if(!id) continue;
+    return badge;
+  }
 
-      const host = hostForLink(el);
-      if(!host || isBadArea(host)) continue;
+  function mountBadge(link) {
+    if (shouldSkipLink(link)) return;
 
-      const hr = host.getBoundingClientRect();
-      if(!hr || hr.bottom < -80 || hr.top > innerHeight + 350) continue;
+    const info = learnEnemyFromLink(link);
+    if (!info) return;
 
-      // Skip giant profile image links; BSP-style attach is next to name/link, not the image.
-      if(hr.width > 520 || hr.height > 90) continue;
+    const badge = makeBadge(info);
 
-      const key = 'xid:' + id + ':' + Math.round(hr.top / 12) + ':' + Math.round(hr.left / 12);
-      if(isProfilePage() && seenProfileId.has(id)) continue;
-      if(seenKey.has(key) || seenHost.has(host)) continue;
+    link.setAttribute(MOUNTED_ATTR, '1');
 
-      seenKey.add(key);
-      seenHost.add(host);
-      if(isProfilePage()) seenProfileId.add(id);
-      out.push({id, host, key});
+    const next = link.nextElementSibling;
+    if (next && next.classList && next.classList.contains(BADGE_CLASS)) {
+      next.remove();
     }
 
-    return out;
+    link.insertAdjacentElement('afterend', badge);
   }
 
-  function isWarPage(){
-    const body = (document.body?.innerText || '').slice(0, 7000);
-    return /factions\.php/i.test(location.href) && /Members\s+Score\s+Status\s+Attack|Lead Target|Chain active|No active chain/i.test(body);
-  }
+  function scanNames() {
+    const links = document.querySelectorAll('a[href*="profiles.php"]');
 
-  function ensureWarLoadButton(){
-    let btn = document.getElementById('absp-bsp-war-load');
-    if(!isWarPage()){
-      if(btn) btn.remove();
-      return;
-    }
-    if(btn) return;
-    btn = document.createElement('button');
-    btn.id = 'absp-bsp-war-load';
-    btn.textContent = '🧠 Load badges';
-    btn.style.cssText = 'position:fixed;right:10px;bottom:122px;z-index:999995;background:#111827;color:#fde68a;border:1px solid #806500;border-radius:10px;padding:7px 9px;font:900 11px Arial;box-shadow:0 2px 10px #000b';
-    btn.onclick = () => schedule(100);
-    document.body.appendChild(btn);
-  }
-
-  function badgeForHost(host, key){
-    if(!host || !key || isBadArea(host) || isActionArea(host)) return null;
-
-    const hostIsAnchor = host.matches?.('a[href*="profiles.php"],a[href*="XID="]');
-    let b;
-
-    if(hostIsAnchor){
-      // BSP-style text links: sibling beside the link.
-      b = host.parentElement?.querySelector(`:scope > .absp-bsp-badge[data-key="${cssEscape(key)}"]`);
-      if(!b){
-        b = document.createElement('span');
-        b.className = 'absp-bsp-badge absp-bsp-unknown';
-        b.dataset.key = key;
-        b.textContent = 'N/A';
-        host.insertAdjacentElement('afterend', b);
-      }
-      host.parentElement?.querySelectorAll(':scope > .absp-bsp-badge').forEach(x => {
-        if(x !== b && x.dataset.key === key) x.remove();
-      });
-    } else {
-      // Honor/name strip elements: lock the badge to the strip's right side.
-      b = host.querySelector(`:scope > .absp-bsp-badge[data-key="${cssEscape(key)}"]`);
-      if(!b){
-        b = document.createElement('span');
-        b.className = 'absp-bsp-badge absp-bsp-unknown';
-        b.dataset.key = key;
-        b.textContent = 'N/A';
-        host.appendChild(b);
-      }
-      const cs = getComputedStyle(host);
-      if(cs.position === 'static') host.style.position = 'relative';
-      b.style.position = 'absolute';
-      b.style.right = '4px';
-      b.style.top = '2px';
-      b.style.marginLeft = '0';
-      host.querySelectorAll(':scope > .absp-bsp-badge').forEach(x => {
-        if(x !== b) x.remove();
-      });
+    for (const link of links) {
+      mountBadge(link);
     }
 
-    return b;
+    updatePanel();
   }
 
-  function cssEscape(s){
-    return String(s).replace(/["\\]/g, '\\$&');
-  }
+  function clearBadges() {
+    document.querySelectorAll(`[${MOUNTED_ATTR}="1"]`).forEach(link => {
+      link.removeAttribute(MOUNTED_ATTR);
+    });
 
-  function updateBadge(b, intel){
-    const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total){
-      b.className = 'absp-bsp-badge absp-bsp-unknown';
-      b.textContent = 'N/A';
-      b.title = 'No usable intel yet';
-      return;
-    }
-    const adjusted = {...intel, confidence:riskConfidence(intel)};
-    const d = diff(total, adjusted.label);
-    b.className = `absp-bsp-badge absp-bsp-${d}`;
-    b.textContent = fmt(total);
-    b.title = `${adjusted.source || 'intel'} • ${d} • ${adjusted.confidence}% • Tap for details`;
-  }
-
-  function intelFor(id){
-    return getIntel(id) || bspIntel(id);
-  }
-
-  function fetchIntel(id, key){
-    if(!id || !state.key) return;
-    const b = document.querySelector(`.absp-bsp-badge[data-key="${cssEscape(key)}"]`);
-    if(!b || b.dataset.fetching === '1') return;
-
-    b.dataset.fetching = '1';
-    req('GET', `/api/player/${id}/intel?your_total=${state.total || 0}`).then(r => {
-      b.dataset.fetching = '';
-      if(r?.ok && r.player){
-        saveIntel(id, r.player);
-        updateBadge(b, getIntel(id) || r.player);
-      }
+    document.querySelectorAll(`.${BADGE_CLASS}`).forEach(badge => {
+      badge.remove();
     });
   }
 
-  function killOld(){
-    document.querySelectorAll('.ebsf2-badge,#ebsf2-btn,#ebsf2-panel,#ebsf2-save,.ebsf2-pop,.absp-badge,.absp-hb-badge,.absp3-badge,.absp31-badge').forEach(x => {
-      x.style.display = 'none';
-      x.style.visibility = 'hidden';
-      x.style.pointerEvents = 'none';
-    });
+  function rescanAll() {
+    clearBadges();
+    scanNames();
   }
 
-  async function paint(){
-    state.pending = false;
-    state.lastPaint = Date.now();
+  let scanTimer = null;
 
-    killOld();
-    updateIcon();
-    ensureWarLoadButton();
-
-    const targets = gatherTargets();
-    const live = new Set();
-
-    for(const t of targets){
-      const b = badgeForHost(t.host, t.key);
-      if(!b) continue;
-
-      live.add(t.key);
-      b.dataset.targetId = String(t.id);
-
-      let intel = intelFor(t.id);
-      if(!intel && isProfilePage()) intel = visibleIntel();
-      if(intel) saveIntel(t.id, intel);
-
-      updateBadge(b, intel);
-
-      if(!intel && !isWarPage()) {
-        setTimeout(() => fetchIntel(t.id, t.key), 900);
-      }
-    }
-
-    document.querySelectorAll('.absp-bsp-badge').forEach(b => {
-      if(!live.has(b.dataset.key) || isBadArea(b) || isActionArea(b) || b.closest('[class*="chat" i],[id*="chat" i],[class*="message" i],[id*="message" i]')) b.remove();
-    });
+  function scheduleScan() {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(scanNames, 180);
   }
 
-  function runIdle(fn, timeout=1400){
-    if('requestIdleCallback' in window) requestIdleCallback(fn, {timeout});
-    else setTimeout(fn, Math.min(timeout, 800));
-  }
+  function createPanel() {
+    if (document.querySelector('#fries-auto-sp-toggle')) return;
 
-  function schedule(ms=900){
-    if(state.pending) return;
-    state.pending = true;
-    clearTimeout(window.__abspBspTimer);
-    window.__abspBspTimer = setTimeout(() => runIdle(paint, isWarPage() ? 2200 : 1400), isWarPage() ? Math.max(ms, 1800) : ms);
-  }
-
-  function initUI(){
-    if(document.getElementById('absp-bsp-main')) return;
-
-    const btn = document.createElement('button');
-    btn.id = 'absp-bsp-main';
-    btn.textContent = '🧠';
-    btn.onclick = () => { state.open = !state.open; renderPanel(); };
-    document.body.appendChild(btn);
+    const toggle = document.createElement('div');
+    toggle.id = 'fries-auto-sp-toggle';
+    toggle.textContent = '📊';
+    toggle.title = 'Fries91 Auto Stat Predictor';
 
     const panel = document.createElement('div');
-    panel.id = 'absp-bsp-panel';
+    panel.id = 'fries-auto-sp-panel';
+
+    if (getVal(STORE.panelOpen, false)) {
+      panel.classList.add('open');
+    }
+
+    panel.innerHTML = `
+      <div class="fries-auto-sp-head">
+        <div>
+          <div class="fries-auto-sp-title">📊 Auto Stat Predictor</div>
+          <div class="fries-auto-sp-sub">BSP-style auto badges • v${VERSION}</div>
+        </div>
+        <button class="fries-auto-sp-close" type="button">×</button>
+      </div>
+
+      <div class="fries-auto-sp-body">
+        <div class="fries-auto-sp-grid">
+          <div class="fries-auto-sp-pill">
+            <strong id="fries-auto-sp-my">0</strong>
+            <span>My Stats</span>
+          </div>
+          <div class="fries-auto-sp-pill">
+            <strong id="fries-auto-sp-enemies">0</strong>
+            <span>Learned</span>
+          </div>
+          <div class="fries-auto-sp-pill">
+            <strong id="fries-auto-sp-badges">0</strong>
+            <span>Badges</span>
+          </div>
+        </div>
+
+        <button class="fries-auto-sp-btn" id="fries-auto-sp-rescan" type="button">Rescan Now</button>
+
+        <div class="fries-auto-sp-help">
+          Fully automatic. It reads your saved Torn API key if one already exists, pulls your battle stats from Torn, then learns enemy estimates from visible BSP / FFS / YATA-style rows. No manual imports needed.
+          <br><br>
+          If a badge shows <b>?</b>, it means the enemy stat estimate is not visible yet.
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(toggle);
     document.body.appendChild(panel);
 
-    makeDraggable(btn);
-    renderPanel();
+    toggle.addEventListener('click', () => {
+      panel.classList.toggle('open');
+      setVal(STORE.panelOpen, panel.classList.contains('open'));
+      updatePanel();
+    });
+
+    panel.querySelector('.fries-auto-sp-close').addEventListener('click', () => {
+      panel.classList.remove('open');
+      setVal(STORE.panelOpen, false);
+    });
+
+    panel.querySelector('#fries-auto-sp-rescan').addEventListener('click', () => {
+      autoReadMyStatsFromVisiblePage();
+      autoPullMyStatsFromTornApi();
+      rescanAll();
+    });
+
+    updatePanel();
   }
 
-  function ownProfile(){
-    if(!state.user?.user_id || !isProfilePage()) return false;
-    const pid = currentProfileId();
-    if(pid) return Number(pid) === Number(state.user.user_id);
-    return !!(state.user?.name && String(document.title || '').toLowerCase().includes(String(state.user.name).toLowerCase()));
+  function updatePanel() {
+    const my = document.querySelector('#fries-auto-sp-my');
+    const enemies = document.querySelector('#fries-auto-sp-enemies');
+    const badges = document.querySelector('#fries-auto-sp-badges');
+
+    if (my) my.textContent = short(getMyStats());
+    if (enemies) enemies.textContent = String(Object.keys(loadEnemies()).length);
+    if (badges) badges.textContent = String(document.querySelectorAll(`.${BADGE_CLASS}`).length);
   }
 
-  function updateIcon(){
-    const b = document.getElementById('absp-bsp-main');
-    if(b) b.style.display = ownProfile() ? 'block' : 'none';
-  }
+  function startObserver() {
+    const observer = new MutationObserver(() => {
+      scheduleScan();
+    });
 
-  function renderPanel(){
-    const p = document.getElementById('absp-bsp-panel');
-    if(!p) return;
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
 
-    p.className = state.open ? 'open' : '';
-    p.innerHTML = `
-      <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp-bsp-close">Close</button></h2>
-      <div class="body">
-        <div class="absp-hero">
-          <div class="absp-hero-title">BSP Attach Mode</div>
-          <div style="color:#cbd5e1;margin-top:4px;line-height:1.35">Clean rebuild: it attaches beside real Torn player links/names like BSP style. No honor-image guessing and no floating overlay.</div>
-          <span class="absp-chip">real XID only</span><span class="absp-chip">sibling badge</span><span class="absp-chip">stable</span>
-        </div>
-
-        <div class="absp-card"><b>📜 Rules</b><ul><li>Use predictions as guidance, not guaranteed wins.</li><li>Do not share private spy/manual data unless you are allowed to.</li><li>Fresh intel is better. Old intel may be stale.</li><li>Respect Torn’s API rules, rate limits, and fair-use expectations.</li></ul></div>
-        <div class="absp-card"><b>⚔️ How It Works</b><p>The badge is attached only beside real Torn profile/player links with an XID or user2ID. If there is no player ID, nothing is shown.</p></div>
-        <div class="absp-card"><b>✅ Terms of Service</b><p>All numbers are estimates and may be wrong. You are responsible for your own attacks, choices, losses, wins, and respect gains.</p></div>
-        <div class="absp-card"><b>🔑 API Key Use & Storage</b><p>Use a <b>limited Torn API key</b>. Your key is stored locally in your PDA/userscript storage. No Torn password is ever requested.</p></div>
-
-        <div class="absp-card">
-          <b>🍽️ Login</b>
-          <input id="absp-bsp-key" type="password" placeholder="Torn limited API key" value="${esc(state.key || '')}">
-          <label style="display:block;margin:8px 0;color:#dbeafe"><input id="absp-bsp-ff" type="checkbox" ${state.ff?'checked':''} style="width:auto"> Use FF/BSP visible/base intel when available</label>
-          <button id="absp-bsp-login">Login / Save</button>
-          <button id="absp-bsp-repaint">Repaint badges</button>
-          <div style="margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}` : 'Not logged in'}</div>
-        </div>
-      </div>`;
-
-    p.querySelector('#absp-bsp-close').onclick = () => { state.open = false; renderPanel(); };
-    p.querySelector('#absp-bsp-login').onclick = login;
-    p.querySelector('#absp-bsp-repaint').onclick = () => schedule(50);
-    updateIcon();
-  }
-
-  async function login(){
-    state.key = document.getElementById('absp-bsp-key')?.value.trim() || '';
-    state.ff = !!document.getElementById('absp-bsp-ff')?.checked;
-    GM_setValue(K.api, state.key);
-    GM_setValue(K.ff, state.ff);
-
-    const r = await req('POST', '/api/login', {api_key: state.key});
-    if(r?.ok){
-      state.user = r.user;
-      state.total = Number(r.stats?.total || 0);
-      state.stats = {
-        strength: r.stats?.strength || 0,
-        defense: r.stats?.defense || 0,
-        speed: r.stats?.speed || 0,
-        dexterity: r.stats?.dexterity || 0
-      };
-      GM_setValue(K.user, JSON.stringify(state.user));
-      GM_setValue(K.total, state.total);
-      GM_setValue(K.stats, JSON.stringify(state.stats));
-    }
-    renderPanel();
-    schedule(80);
-  }
-
-  function makeDraggable(btn){
-    const saved = safeJson(GM_getValue(K.icon, 'null'));
-    if(saved && saved.left != null && saved.top != null){
-      btn.style.left = saved.left + 'px';
-      btn.style.top = saved.top + 'px';
-      btn.style.bottom = 'auto';
-    }
-
-    let drag = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
-    const down = e => {
-      const p = e.touches ? e.touches[0] : e;
-      drag = true; moved = false;
-      sx = p.clientX; sy = p.clientY;
-      const r = btn.getBoundingClientRect();
-      sl = r.left; st = r.top;
-    };
-    const move = e => {
-      if(!drag) return;
-      const p = e.touches ? e.touches[0] : e;
-      const dx = p.clientX - sx, dy = p.clientY - sy;
-      if(Math.abs(dx) + Math.abs(dy) > 5) moved = true;
-      const left = Math.max(4, Math.min(innerWidth - btn.offsetWidth - 4, sl + dx));
-      const top = Math.max(54, Math.min(innerHeight - btn.offsetHeight - 54, st + dy));
-      btn.style.left = left + 'px';
-      btn.style.top = top + 'px';
-      btn.style.bottom = 'auto';
-      e.preventDefault?.();
-    };
-    const up = e => {
-      if(!drag) return;
-      drag = false;
-      GM_setValue(K.icon, JSON.stringify({left:parseInt(btn.style.left || '16'), top:parseInt(btn.style.top || '120')}));
-      if(moved){
-        e.preventDefault?.();
-        e.stopPropagation?.();
-        setTimeout(() => moved = false, 80);
-      }
-    };
-    btn.addEventListener('touchstart', down, {passive:false});
-    btn.addEventListener('mousedown', down, true);
-    document.addEventListener('touchmove', move, {passive:false});
-    document.addEventListener('mousemove', move, true);
-    document.addEventListener('touchend', up, true);
-    document.addEventListener('mouseup', up, true);
-
-    const oldClick = btn.onclick;
-    btn.onclick = e => { if(!moved) oldClick?.(e); };
-  }
-
-  function tag(v, type='value'){
-    let color = 'grey';
-    if(type === 'conf'){
-      const n = Number(v || 0);
-      color = confColor(n);
-      v = Math.max(0, Math.min(100, Math.round(n))) + '%';
-    } else {
-      const l = String(v || 'Unknown').toLowerCase();
-      if(l.includes('avoid') || l.includes('high') || l.includes('heavy')) color = 'red';
-      else if(l.includes('difficult')) color = 'orange';
-      else if(l.includes('fair') || l.includes('equal')) color = 'yellow';
-      else if(l.includes('easy')) color = 'green';
-      else if(l.includes('low') || l.includes('light')) color = 'blue';
-    }
-    return `<span class="absp-tag absp-${color}">${esc(v || 'Unknown')}</span>`;
-  }
-
-  function popup(b){
-    document.querySelectorAll('.absp-pop').forEach(x => x.remove());
-
-    const id = b.dataset.targetId ? Number(b.dataset.targetId) : null;
-    const intel = (id && getIntel(id)) || (id && bspIntel(id)) || {total:parseNum(b.textContent), confidence:0, source:'badge'};
-    const total = Number(intel?.best_total || intel?.total || 0);
-    const conf = riskConfidence(intel);
-    const d = diff(total, intel?.label);
-
-    const pop = document.createElement('div');
-    pop.className = 'absp-pop';
-    pop.innerHTML = `
-      <div class="absp-pop-head"><b>⚔️ Battle Intel</b><button class="close">×</button></div>
-      <div class="absp-pop-body">
-        <div><b>Total:</b> ${total ? fmt(total) : 'N/A'} ${tag(total ? d : 'Unknown')}</div>
-        <div><b>Source:</b> ${esc(intel?.source || 'none')}</div>
-        <div><b>Confidence:</b> ${tag(conf, 'conf')}</div>
-        ${total && state.total && total / state.total >= 2.5 ? `<div style="margin-top:7px;padding:6px;border-radius:8px;background:#431407;color:#fdba74;border:1px solid #f97316;font-weight:900">Confidence reduced: high stat gap</div>` : ''}
-        <hr>
-        <div class="absp-grid">
-          <div><b>STR</b>${tag('Unknown')}</div>
-          <div><b>DEF</b>${tag('Unknown')}</div>
-          <div><b>SPD</b>${tag('Unknown')}</div>
-          <div><b>DEX</b>${tag('Unknown')}</div>
-          <div><b>Armor</b>${tag('Unknown')}</div>
-          <div><b>Temp</b>${tag('Unknown')}</div>
-        </div>
-      </div>`;
-    document.body.appendChild(pop);
-
-    const r = b.getBoundingClientRect();
-    pop.style.left = Math.max(8, Math.min(innerWidth - 265, r.left)) + 'px';
-    pop.style.top = Math.max(78, Math.min(innerHeight - 280, r.bottom + 6)) + 'px';
-    pop.querySelector('.close').onclick = e => { e.stopPropagation(); pop.remove(); schedule(120); };
-  }
-
-  document.addEventListener('click', e => {
-    const b = e.target.closest?.('.absp-bsp-badge');
-    if(!b) return;
-    e.preventDefault();
-    e.stopPropagation();
-    popup(b);
-  }, true);
-
-  document.addEventListener('click', e => {
-    const el = e.target.closest?.('a,button,[onclick]');
-    if(!el) return;
-    const blob = [el.href, el.getAttribute?.('href'), el.getAttribute?.('onclick'), el.textContent, el.getAttribute?.('title')].filter(Boolean).join(' ');
-    if(!/sid=attack|user2ID|attack|fight/i.test(blob)) return;
-    const id = extractId(blob);
-    if(id) GM_setValue('absp_last_attack_target', JSON.stringify({id, ts:Date.now()}));
-  }, true);
-
-  function boot(){
-    initUI();
-    killOld();
-    updateIcon();
-
-    setTimeout(() => schedule(700), isWarPage() ? 5000 : 1600);
-    setTimeout(() => schedule(900), isWarPage() ? 9500 : 4200);
-
-    let lastMutation = 0;
-    try{
-      const obs = new MutationObserver(() => {
-        const now = Date.now();
-        const gap = isWarPage() ? 2400 : 1000;
-        if(now - lastMutation < gap) return;
-        lastMutation = now;
-        schedule(isWarPage() ? 2600 : 900);
-      });
-      obs.observe(document.body, {childList:true, subtree:true});
-    }catch {}
-
-    let scrollTimer = null;
-    window.addEventListener('scroll', () => {
-      clearTimeout(scrollTimer);
-      scrollTimer = setTimeout(() => schedule(isWarPage() ? 900 : 300), isWarPage() ? 900 : 350);
-    }, {passive:true});
-
-    let last = location.href;
     setInterval(() => {
-      ensureWarLoadButton();
-      if(location.href !== last){
-        last = location.href;
-        document.querySelectorAll('.absp-bsp-badge').forEach(b => b.remove());
-        schedule(isWarPage() ? 3200 : 900);
-      } else {
-        killOld();
-        updateIcon();
-        if(Date.now() - state.lastPaint > (isWarPage() ? 15000 : 7000)) schedule(isWarPage() ? 2500 : 900);
-      }
-    }, isWarPage() ? 5000 : 3000);
+      autoReadMyStatsFromVisiblePage();
+      autoPullMyStatsFromTornApi();
+      scanNames();
+    }, 3500);
   }
 
-  boot();
+  function start() {
+    createPanel();
+    autoReadMyStatsFromVisiblePage();
+    autoPullMyStatsFromTornApi();
+    scanNames();
+    startObserver();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
 })();
