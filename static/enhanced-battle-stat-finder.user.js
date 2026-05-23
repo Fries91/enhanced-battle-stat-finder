@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.4.3
-// @description  One stable ABSP script for PDA/mobile/PC browser/Violentmonkey: own-profile settings icon, profile/faction prediction badges, admin debug, shared learning.
+// @version      3.4.4
+// @description  ABSP rescue stable: own-profile settings icon before login, restored profile/faction prediction badges, PC/PDA/VM support, admin debug.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/profiles.php*
@@ -39,7 +39,7 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.4.3';
+  const VERSION = '3.4.4';
   const ADMIN_IDS = new Set(['3679030']);
   const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v336', sent:'absp_shared_sent_v336', ff:'absp_ff_enabled',debug:'absp_debug_history_v336' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
@@ -68,17 +68,9 @@
   function req(method,path,data){
     return new Promise(resolve=>{
       const xhr = (typeof GM_xmlhttpRequest === 'function') ? GM_xmlhttpRequest : (typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest : null);
-      if(!xhr){
-        try{ debugAdd('api','GM request permission missing',false); }catch{}
-        resolve({ok:false,error:'GM request permission missing'});
-        return;
-      }
+      if(!xhr){ try{ debugAdd('api','GM request permission missing',false); }catch{} resolve({ok:false,error:'GM request permission missing'}); return; }
       xhr({
-        method,
-        url:BASE+path,
-        headers:{'Content-Type':'application/json'},
-        data:data?JSON.stringify(data):undefined,
-        timeout:20000,
+        method, url:BASE+path, headers:{'Content-Type':'application/json'}, data:data?JSON.stringify(data):undefined, timeout:20000,
         onload:r=>{try{const parsed=JSON.parse(r.responseText); try{debugAdd(method+' '+path, parsed.ok===false ? (parsed.error||'not ok') : 'ok', parsed.ok!==false);}catch{} resolve(parsed)}catch{try{debugAdd(method+' '+path,'bad json',false);}catch{} resolve({ok:false,error:'bad json'})}},
         onerror:e=>{ try{debugAdd(method+' '+path,String(e),false);}catch{} resolve({ok:false,error:String(e)}); },
         ontimeout:()=>{ try{debugAdd(method+' '+path,'timeout',false);}catch{} resolve({ok:false,error:'timeout'}); }
@@ -99,7 +91,7 @@
   function updateBadge(badge,intel){const total=Number(intel?.best_total||intel?.total||0);if(!total){badge.className='iconStats absp330-badge absp330-unknown';badge.textContent='N/A';badge.title='No shared intel yet • tap to feed';return}const d=diff(total,intel?.label);badge.className='iconStats absp330-badge absp330-'+d;badge.textContent=fmt(total);badge.title=`${intel?.source||'shared'} • ${d} • ${riskConfidence(intel)}% • tap for details/feed`}
   function buildInjection(target,intel){if(target.mount.querySelector('.absp330-inject,.TDup_BSPProfileInjection.absp330-profile'))return null;let div=document.createElement('div');if(target.type==='profile'){div.className='TDup_BSPProfileInjection absp330-profile';div.dataset.targetId=String(target.id);div.appendChild(document.createTextNode('ABSP '))}else{div.className=target.type==='dataGridData'?'TDup_ColoredStatsInjectionDivWithoutHonorBar absp330-inject':'TDup_ColoredStatsInjectionDiv absp330-inject';div.dataset.targetId=String(target.id);if(target.type!=='dataGridData')div.style.margin=marginFor(target.type,target.mount)}const badge=document.createElement('div');badge.dataset.targetId=String(target.id);badge.setAttribute('role','button');badge.setAttribute('tabindex','0');updateBadge(badge,intel);div.appendChild(badge);target.mount.insertBefore(div,target.mount.firstChild);return badge}
   function fetchIntel(id,badge){req('GET',`/api/player/${id}/intel?your_total=${state.total||0}`).then(r=>{if(r?.ok&&r.player){saveIntel(id,r.player);if(badge)updateBadge(badge,r.player)}})}
-  function paint(root=document){state.pending=false;state.lastPaint=Date.now();mountIcon(); scanInlineTargets();for(const target of collectTargets(root)){let intel=getIntel(target.id)||bspIntel(target.id);if(!intel&&pageProfile())intel=visibleIntel();if(intel){saveIntel(target.id,intel);shareIntel(target.id,intel)}const badge=buildInjection(target,intel);if(badge&&!intel)fetchIntel(target.id,badge);else if(badge&&intel)setTimeout(()=>fetchIntel(target.id,badge),800)}} function schedule(ms=900,root=document){if(state.pending)return;state.pending=true;clearTimeout(window.__absp330Timer);window.__absp330Timer=setTimeout(()=>paint(root),ms)}
+  function paint(root=document){state.pending=false;state.lastPaint=Date.now();mountIcon();for(const target of collectTargets(root)){let intel=getIntel(target.id)||bspIntel(target.id);if(!intel&&pageProfile())intel=visibleIntel();if(intel){saveIntel(target.id,intel);shareIntel(target.id,intel)}const badge=buildInjection(target,intel);if(badge&&!intel)fetchIntel(target.id,badge);else if(badge&&intel)setTimeout(()=>fetchIntel(target.id,badge),800)}} function schedule(ms=900,root=document){if(state.pending)return;state.pending=true;clearTimeout(window.__absp330Timer);window.__absp330Timer=setTimeout(()=>paint(root),ms)}
 
   function rangeText(lo, hi){
     lo = Number(lo || 0); hi = Number(hi || 0);
@@ -199,42 +191,70 @@
   function openBadge(e){const b=e.target.closest?.('.absp330-badge');if(!b)return;e.preventDefault();e.stopPropagation();e.stopImmediatePropagation?.();popup(b);return false}document.addEventListener('click',openBadge,true);document.addEventListener('mousedown',e=>{if(e.target.closest?.('.absp330-badge')){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation?.()}},true);document.addEventListener('keydown',e=>{const b=e.target.closest?.('.absp330-badge');if(!b)return;if(e.key==='Enter'||e.key===' '){e.preventDefault();popup(b)}},true)
   document.addEventListener('click',e=>{const el=e.target.closest?.('a,button,[onclick]');if(!el)return;const blob=[el.href,el.getAttribute?.('href'),el.getAttribute?.('onclick'),el.textContent,el.getAttribute?.('title')].filter(Boolean).join(' ');if(!/sid=attack|user2ID|attack|fight/i.test(blob))return;const id=extractId(blob);if(id)GM_setValue('absp_last_attack_target',JSON.stringify({id,ts:Date.now()}))},true)
 
+  function visibleProfileEstimate(){
+    const txt=(document.body?.innerText||'').replace(/\s+/g,' ');
+    const m=txt.match(/FairFight:\s*([0-9.,]+)\s*([kmbt]?)/i)||txt.match(/Stats:\s*([0-9.,]+)\s*([kmbt]?)/i);
+    if(!m)return 0;
+    return parseNum(m[1]+(m[2]||''));
+  }
+
+  function ensureProfileBadge(){
+    if(!pageProfile())return;
+    const id=currentProfileId();
+    if(!id || Number(id)===Number(state.user?.user_id||0))return;
+    let intel=getIntel(id)||bspIntel(id);
+    const vis=visibleProfileEstimate();
+    if(vis && (!intel||!intel.total)){
+      intel={user_id:id,total:vis,best_total:vis,source:'visible_estimate',confidence:58,label:diff(vis)};
+      saveIntel(id,intel);
+      shareIntel(id,intel);
+    }
+    if(!intel||!(intel.total||intel.best_total))return;
+    let host=document.querySelector('.profile-buttons,.buttons-wrap,.profile-wrapper .actions,.actions')||document.querySelector('h4,h1')||document.body;
+    let badge=document.querySelector('.absp330-profile-badge[data-target-id="'+id+'"]');
+    if(!badge){
+      badge=document.createElement('button');
+      badge.className='absp330-badge absp330-profile-badge';
+      badge.dataset.targetId=id;
+      badge.onclick=e=>{e.preventDefault();e.stopPropagation();popup(badge);};
+      if(host===document.body)document.body.appendChild(badge); else host.insertAdjacentElement('afterbegin',badge);
+    }
+    badge.textContent='ABSP '+fmt(intel.best_total||intel.total);
+    badge.title='ABSP Intel';
+  }
+
   function findNameRowTargets(){
-    const out = new Map();
-    document.querySelectorAll('a[href*="profiles.php?XID="], a[href*="profiles.php?userID="], a[href*="/profiles.php"]').forEach(a=>{
-      const id = extractId(a.href || a.getAttribute('href') || '');
-      if(!id || Number(id)===Number(state.user?.user_id||0)) return;
-      const rect = a.getBoundingClientRect();
-      if(rect.width < 12 || rect.height < 8) return;
-      out.set(id, {id, name:cleanText(a), anchor:a});
+    const out=new Map();
+    document.querySelectorAll('a[href*="profiles.php?XID="],a[href*="profiles.php?userID="],a[href*="profiles.php"]').forEach(a=>{
+      const id=extractId(a.href||a.getAttribute('href')||'');
+      if(!id||Number(id)===Number(state.user?.user_id||0))return;
+      const rect=a.getBoundingClientRect();
+      if(rect.width<10||rect.height<6)return;
+      out.set(id,{id,name:cleanText(a),anchor:a});
     });
     return [...out.values()].slice(0,120);
   }
 
-  function ensureInlineBadge(target, intel){
-    if(!target?.anchor || !target.id) return;
-    const a = target.anchor;
-    if(a.parentElement?.querySelector?.('.absp330-inline[data-target-id="'+target.id+'"]')) return;
-    const total = Number(intel?.best_total || intel?.total || 0);
-    if(!total) return;
-    const b = document.createElement('button');
+  function ensureInlineBadge(target,intel){
+    if(!target?.anchor||!target.id||!intel||!(intel.total||intel.best_total))return;
+    const a=target.anchor;
+    if(a.parentElement?.querySelector?.('.absp330-inline[data-target-id="'+target.id+'"]'))return;
+    const b=document.createElement('button');
     b.className='absp330-badge absp330-inline';
     b.dataset.targetId=target.id;
-    b.textContent='ABSP '+fmt(total);
+    b.textContent='ABSP '+fmt(intel.best_total||intel.total);
     b.title='ABSP Intel';
     b.onclick=e=>{e.preventDefault();e.stopPropagation();popup(b);};
-    a.insertAdjacentElement('afterend', b);
+    a.insertAdjacentElement('afterend',b);
   }
 
-  async function scanInlineTargets(){
+  function scanInlineTargets(){
+    ensureProfileBadge();
     const targets=findNameRowTargets();
-    if(!targets.length) return;
     for(const t of targets){
       let intel=getIntel(t.id)||bspIntel(t.id);
-      if(intel?.total || intel?.best_total) ensureInlineBadge(t,intel);
-      if(!intel && state.total){
-        fetchIntel(t.id).then(r=>{ const got=getIntel(t.id); if(got) ensureInlineBadge(t,got); });
-      }
+      if(intel?.total||intel?.best_total)ensureInlineBadge(t,intel);
+      if(!intel&&state.total)fetchIntel(t.id).then(()=>{const got=getIntel(t.id);if(got)ensureInlineBadge(t,got);});
     }
   }
 
@@ -242,29 +262,36 @@
   function isMobileLike(){ return /Android|iPhone|iPad|iPod|Mobile|PDA/i.test(navigator.userAgent) || innerWidth < 760; }
 
   function ownProfile(){
-    if(!state.user?.user_id || !pageProfile()) return false;
-    const pid = currentProfileId();
-    if(pid) return Number(pid) === Number(state.user.user_id);
-    return !!(state.user?.name && String(document.title||'').toLowerCase().includes(String(state.user.name).toLowerCase()));
+    if(!pageProfile()) return false;
+    const bodyText=(document.body?.innerText||'').toLowerCase();
+    const titleText=String(document.title||'').toLowerCase();
+    if(bodyText.includes("this is you")) return true;
+    if(state.user?.user_id){
+      const pid=currentProfileId();
+      if(pid) return Number(pid)===Number(state.user.user_id);
+      if(state.user?.name && titleText.includes(String(state.user.name).toLowerCase())) return true;
+    }
+    if(titleText.includes("fries91") || bodyText.includes("fries91's profile")) return true;
+    return false;
   }
 
   function hideMainIcon(btn){
-    if(!btn) return;
+    if(!btn)return;
     btn.classList.remove('absp330-main-visible','absp330-main-floating');
     btn.style.display='none';
     if(state.panelOpen){
       state.panelOpen=false;
       const p=document.getElementById('absp330-panel');
-      if(p) p.className='';
+      if(p)p.className='';
     }
   }
 
   function showProfileIcon(btn){
-    if(!btn) return;
-    btn.textContent = isMobileLike() ? '🧠' : '🧠 ABSP';
+    if(!btn)return;
+    btn.textContent=isMobileLike()?'🧠':'🧠 ABSP';
     btn.style.position='fixed';
     btn.style.left='12px';
-    btn.style.bottom=isMobileLike() ? '84px' : '18px';
+    btn.style.bottom=isMobileLike()?'84px':'18px';
     btn.style.display='inline-flex';
     btn.style.zIndex='2147483646';
     btn.classList.add('absp330-main-visible','absp330-main-floating');
@@ -272,12 +299,8 @@
 
   function mountIcon(){
     const btn=document.getElementById('absp330-main');
-    if(!btn) return;
-    // Settings launcher is only on your own profile. Badges can still show on targets/faction rows.
-    if(!ownProfile()){
-      hideMainIcon(btn);
-      return;
-    }
+    if(!btn)return;
+    if(!ownProfile()){ hideMainIcon(btn); return; }
     showProfileIcon(btn);
   }
 
@@ -291,7 +314,7 @@
         <div class="absp330-hero">
           <div class="absp330-hero-title">🍽️ Feed the Finder <span style="font-size:11px;color:#fef3c7">v${VERSION}</span></div>
           <div style="color:#cbd5e1;margin-top:4px;line-height:1.3">
-            Compact auto-only mode. One stable script for PDA/mobile/PC/browser userscript managers. Main settings opens only on your own profile; badges still show on player profiles and faction rows when intel exists.
+            Compact auto-only mode. Main settings opens only on your own profile page; badges still show target intel on player profiles.
           </div>
           <span class="absp330-chip">Auto-only</span>
           <span class="absp330-chip">Shared learning</span>
@@ -424,7 +447,8 @@
   document.addEventListener('keydown',e=>{if(e.altKey&&String(e.key).toLowerCase()==='a'&&ownProfile()){state.panelOpen=!state.panelOpen;renderPanel();mountIcon();}},true); // Alt+A PC opener, own profile only
 
   function boot(){initUI();
-    setTimeout(scanInlineTargets,700);
-    setTimeout(scanInlineTargets,2200);setTimeout(()=>schedule(500),1200);setTimeout(()=>schedule(900),3500);let lastMutation=0;try{const obs=new MutationObserver(mutations=>{const now=Date.now();const gap=(location.href.includes('factions.php')||location.href.includes('war.php'))?2200:900;if(now-lastMutation<gap)return;lastMutation=now;let root=document;for(const m of mutations){for(const n of m.addedNodes){if(n&&n.nodeType===1&&n.querySelector){root=n;break}}}schedule(gap,root)});obs.observe(document.body,{childList:true,subtree:true})}catch{}setInterval(()=>{mountIcon();if(Date.now()-state.lastPaint>9000)schedule(800)},3000)}
+    setTimeout(scanInlineTargets,500);
+    setTimeout(scanInlineTargets,1800);
+    setTimeout(scanInlineTargets,4000);setTimeout(()=>schedule(500),1200);setTimeout(()=>schedule(900),3500);let lastMutation=0;try{const obs=new MutationObserver(mutations=>{const now=Date.now();const gap=(location.href.includes('factions.php')||location.href.includes('war.php'))?2200:900;if(now-lastMutation<gap)return;lastMutation=now;let root=document;for(const m of mutations){for(const n of m.addedNodes){if(n&&n.nodeType===1&&n.querySelector){root=n;break}}}schedule(gap,root)});obs.observe(document.body,{childList:true,subtree:true})}catch{}setInterval(()=>{mountIcon();if(Date.now()-state.lastPaint>9000)schedule(800)},3000)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
