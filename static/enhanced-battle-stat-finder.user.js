@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.4.1
-// @description  PC/PDA ABSP: main settings launcher locked to your own profile page only, prediction badges on profiles, admin debug, shared learning.
+// @version      3.4.5
+// @description  ABSP rollback-fix: settings icon locked to your own profile even before login, clickable login panel, target prediction badges kept.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/profiles.php*
@@ -39,7 +39,7 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.4.1';
+  const VERSION = '3.4.5';
   const ADMIN_IDS = new Set(['3679030']);
   const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v336', sent:'absp_shared_sent_v336', ff:'absp_ff_enabled',debug:'absp_debug_history_v336' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
@@ -56,7 +56,7 @@
     .iconStats.absp330-badge{height:20px!important;width:48px!important;position:relative!important;text-align:center!important;font-size:11px!important;font-weight:bold!important;box-sizing:border-box!important;border:1px solid black!important;line-height:18px!important;font-family:initial!important;border-radius:5px!important;box-shadow:0 1px 4px rgba(0,0,0,.7)!important;cursor:pointer!important;pointer-events:auto!important;overflow:hidden!important;white-space:nowrap!important}
     .absp330-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}.absp330-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}.absp330-good{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}.absp330-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}.absp330-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}.absp330-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
     #absp330-main{display:none!important;min-width:66px!important;height:38px!important;border-radius:10px!important;border:2px solid #facc15!important;background:#111827!important;color:#fde68a!important;font-size:13px!important;font-weight:1000!important;box-shadow:0 3px 14px #000!important;touch-action:none!important;z-index:2147483646!important;position:fixed!important;left:12px!important;bottom:82px!important;align-items:center!important;justify-content:center!important;padding:0 8px!important;letter-spacing:.4px!important}#absp330-main.absp330-main-visible{display:inline-flex!important}#absp330-main.absp330-main-floating{display:inline-flex!important;position:fixed!important;left:12px!important;bottom:82px!important;z-index:2147483646!important}.absp330-main-wrap{display:inline-flex!important;align-items:center!important;justify-content:center!important;margin:4px!important;position:relative!important;z-index:35!important}
-    #absp330-panel#absp330-panel{position:fixed;left:8px;right:8px;top:74px;bottom:66px;z-index:999997;background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none}#absp330-panel.open{display:block}#absp330-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}#absp330-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}#absp330-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}#absp330-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
+    #absp330-panel#absp330-panel{position:fixed;left:8px;right:8px;top:70px;bottom:74px;z-index:999997;background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none}#absp330-panel.open{display:block}#absp330-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}#absp330-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}#absp330-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}#absp330-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
     .absp330-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9))}.absp330-hero-title{font-size:22px;font-weight:1000;color:#facc15;text-transform:uppercase}.absp330-chip{display:inline-flex;margin:7px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}.absp330-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35);margin-bottom:10px}.absp330-card:nth-of-type(2){box-shadow:inset 3px 0 0 rgba(34,197,94,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card:nth-of-type(3){box-shadow:inset 3px 0 0 rgba(59,130,246,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card:nth-of-type(4){box-shadow:inset 3px 0 0 rgba(250,204,21,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card:nth-of-type(5){box-shadow:inset 3px 0 0 rgba(168,85,247,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase}.absp330-card p,.absp330-card li{color:#dbeafe;line-height:1.42}.absp330-card ul{margin:7px 0 0 18px;padding:0}.absp330-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe}
     .TDup_BSPProfileInjection.absp330-profile{margin:8px 0 4px 0!important;padding:6px 8px!important;border-radius:8px!important;background:#111827!important;border:1px solid #64748b!important;color:#cbd5e1!important;font:900 12px Arial,sans-serif!important;display:inline-flex!important;align-items:center!important;gap:6px!important}
     .absp330-pop{position:fixed;z-index:999999;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:280px;font:12px Arial,sans-serif;overflow:hidden}.absp330-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}.absp330-pop-head button{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important}.absp330-pop-body{padding:10px;line-height:1.45}.absp330-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}.absp330-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.absp330-row button{font-size:11px!important;padding:5px 7px!important;margin:0!important;border-radius:9px!important}.absp330-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px}.absp330-grid div{background:#111827;border:1px solid #334155;border-radius:8px;padding:6px;display:flex;justify-content:space-between;align-items:center}.absp330-feed-actions button{background:#111827!important;color:#fde68a!important;border:1px solid rgba(250,204,21,.65)!important}.absp330-feed-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:10px}
@@ -208,12 +208,62 @@
   function feedFight(targetId,result,pop){if(!state.user?.user_id||!state.total){alert('Login first so ABSP knows your battle stats.');return}req('POST','/api/attack/result',{attacker_id:state.user.user_id,attacker_name:state.user.name,attacker_total:state.total,target_id:targetId,target_name:'Enemy',result,attacker_stats:state.stats,fight_meta:{source:'ABSP popup feed',version:VERSION}}).then(r=>{if(r?.ok&&r.player){saveIntel(targetId,r.player);pop.remove();schedule(80)}else alert('Feed failed: '+(r?.error||'unknown'))})}
   function openBadge(e){const b=e.target.closest?.('.absp330-badge');if(!b)return;e.preventDefault();e.stopPropagation();e.stopImmediatePropagation?.();popup(b);return false}document.addEventListener('click',openBadge,true);document.addEventListener('mousedown',e=>{if(e.target.closest?.('.absp330-badge')){e.preventDefault();e.stopPropagation();e.stopImmediatePropagation?.()}},true);document.addEventListener('keydown',e=>{const b=e.target.closest?.('.absp330-badge');if(!b)return;if(e.key==='Enter'||e.key===' '){e.preventDefault();popup(b)}},true)
   document.addEventListener('click',e=>{const el=e.target.closest?.('a,button,[onclick]');if(!el)return;const blob=[el.href,el.getAttribute?.('href'),el.getAttribute?.('onclick'),el.textContent,el.getAttribute?.('title')].filter(Boolean).join(' ');if(!/sid=attack|user2ID|attack|fight/i.test(blob))return;const id=extractId(blob);if(id)GM_setValue('absp_last_attack_target',JSON.stringify({id,ts:Date.now()}))},true)
-  function initUI(){if(!document.getElementById('absp330-main')){const btn=document.createElement('button');btn.id='absp330-main';btn.type='button';btn.textContent='🧠 ABSP';btn.title='Advanced Battle Stat Predictor - click to open';btn.onclick=e=>{e.preventDefault();e.stopPropagation();state.panelOpen=!state.panelOpen;renderPanel()};document.body.appendChild(btn)}if(!document.getElementById('absp330-panel')){const panel=document.createElement('div');panel.id='absp330-panel';document.body.appendChild(panel)}renderPanel();mountIcon();setTimeout(mountIcon,250);setTimeout(mountIcon,1000);setTimeout(mountIcon,2500)}
+  function isMobileLike(){ return /Android|iPhone|iPad|iPod|Mobile|PDA/i.test(navigator.userAgent) || innerWidth < 760; }
+
+  function initUI(){
+    if(!document.getElementById('absp330-main')){
+      const btn=document.createElement('button');
+      btn.id='absp330-main';
+      btn.type='button';
+      btn.textContent=isMobileLike()?'🧠':'🧠 ABSP';
+      btn.title='Advanced Battle Stat Predictor - settings';
+      btn.onclick=e=>{
+        e.preventDefault();
+        e.stopPropagation();
+        if(!ownProfile()){
+          hideMainIcon(btn);
+          return false;
+        }
+        state.panelOpen=!state.panelOpen;
+        renderPanel();
+        mountIcon();
+        return false;
+      };
+      document.body.appendChild(btn);
+    }
+    if(!document.getElementById('absp330-panel')){
+      const panel=document.createElement('div');
+      panel.id='absp330-panel';
+      document.body.appendChild(panel);
+    }
+    renderPanel();
+    mountIcon();
+    setTimeout(mountIcon,250);
+    setTimeout(mountIcon,1000);
+    setTimeout(mountIcon,2500);
+  }
   function ownProfile(){
-    if(!state.user?.user_id || !pageProfile()) return false;
-    const pid = currentProfileId();
-    if(pid) return Number(pid) === Number(state.user.user_id);
-    return !!(state.user?.name && String(document.title||'').toLowerCase().includes(String(state.user.name).toLowerCase()));
+    if(!pageProfile()) return false;
+
+    const bodyText = (document.body?.innerText || '').toLowerCase();
+    const titleText = String(document.title || '').toLowerCase();
+    const urlText = String(location.href || '').toLowerCase();
+
+    // Torn/PDA shows this on your own profile, and it works even before ABSP login.
+    if(bodyText.includes("this is you")) return true;
+
+    // Owner fallback so you can always reach login/settings if storage resets.
+    if(titleText.includes("fries91") || bodyText.includes("fries91's profile") || bodyText.includes("fries91 profile")) return true;
+
+    // Logged-in comparison when available.
+    if(state.user?.user_id){
+      const pid = currentProfileId();
+      if(pid && Number(pid) === Number(state.user.user_id)) return true;
+      if(state.user?.name && titleText.includes(String(state.user.name).toLowerCase())) return true;
+      if(state.user?.name && bodyText.includes(String(state.user.name).toLowerCase()+"'s profile")) return true;
+    }
+
+    return false;
   }
 
   function hideMainIcon(btn){
@@ -229,11 +279,13 @@
 
   function showProfileIcon(btn){
     if(!btn) return;
+    btn.textContent=isMobileLike()?'🧠':'🧠 ABSP';
     btn.style.position='fixed';
     btn.style.left='12px';
-    btn.style.bottom='82px';
+    btn.style.bottom=isMobileLike()?'92px':'18px';
     btn.style.display='inline-flex';
     btn.style.zIndex='2147483646';
+    btn.style.pointerEvents='auto';
     btn.classList.add('absp330-main-visible','absp330-main-floating');
   }
 
@@ -241,8 +293,8 @@
     const btn=document.getElementById('absp330-main');
     if(!btn) return;
 
-    // v3.4.1: settings/main launcher is locked to YOUR own profile page only.
-    // Prediction badges can still show on other player profiles.
+    // Settings/main launcher is locked to YOUR own profile page only.
+    // It still appears before login when Torn says "This is you".
     if(!ownProfile()){
       hideMainIcon(btn);
       return;
@@ -261,7 +313,7 @@
         <div class="absp330-hero">
           <div class="absp330-hero-title">🍽️ Feed the Finder <span style="font-size:11px;color:#fef3c7">v${VERSION}</span></div>
           <div style="color:#cbd5e1;margin-top:4px;line-height:1.3">
-            Compact auto-only mode. Main settings opens only on your own profile page; badges still show target intel on player profiles.
+            Rollback-fix build. Settings icon shows only on your own profile and opens even before login. Target prediction badges stay on player profiles.
           </div>
           <span class="absp330-chip">Auto-only</span>
           <span class="absp330-chip">Shared learning</span>
@@ -391,7 +443,7 @@
     }
   }
 
-  document.addEventListener('keydown',e=>{if(e.altKey&&String(e.key).toLowerCase()==='a'&&ownProfile()){state.panelOpen=!state.panelOpen;renderPanel();mountIcon();}},true); // Alt+A PC opener, own profile only
+  document.addEventListener('keydown',e=>{if(e.altKey&&String(e.key).toLowerCase()==='a'&&ownProfile()){state.panelOpen=!state.panelOpen;renderPanel();mountIcon();}},true); // Alt+A own profile only
 
   function boot(){initUI();setTimeout(()=>schedule(500),1200);setTimeout(()=>schedule(900),3500);let lastMutation=0;try{const obs=new MutationObserver(mutations=>{const now=Date.now();const gap=(location.href.includes('factions.php')||location.href.includes('war.php'))?2200:900;if(now-lastMutation<gap)return;lastMutation=now;let root=document;for(const m of mutations){for(const n of m.addedNodes){if(n&&n.nodeType===1&&n.querySelector){root=n;break}}}schedule(gap,root)});obs.observe(document.body,{childList:true,subtree:true})}catch{}setInterval(()=>{mountIcon();if(Date.now()-state.lastPaint>9000)schedule(800)},3000)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
