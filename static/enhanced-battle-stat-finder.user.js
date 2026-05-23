@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.3.4
-// @description  Feed the Finder compact auto-only build: shared learning, STR/DEF/SPD/DEX ranges, armor/temp auto notes, profile icon, and safe badge clicks.
+// @version      3.3.5
+// @description  Feed the Finder compact auto-only build: attack-log auto learning, shared STR/DEF/SPD/DEX ranges, armor/temp notes, profile icon, and safe badge clicks.
 // @author       Fries91
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/bringafriend.php*
@@ -34,8 +34,8 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.3.4';
-  const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v334', sent:'absp_shared_sent_v334', ff:'absp_ff_enabled' };
+  const VERSION = '3.3.5';
+  const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v335', sent:'absp_shared_sent_v335', ff:'absp_ff_enabled' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
 
   GM_addStyle(`
@@ -179,7 +179,7 @@
         <div class="absp330-hero">
           <div class="absp330-hero-title">🍽️ Feed the Finder <span style="font-size:11px;color:#fef3c7">v${VERSION}</span></div>
           <div style="color:#cbd5e1;margin-top:4px;line-height:1.3">
-            Compact auto-only mode. ABSP reads allowed visible intel, cached estimates, and shared backend records without manual trait inputs.
+            Compact auto-only mode. ABSP reads visible intel, attack logs, cached estimates, and shared backend records without manual trait inputs.
           </div>
           <span class="absp330-chip">Auto-only</span>
           <span class="absp330-chip">Shared learning</span>
@@ -194,7 +194,7 @@
 
         <div class="absp330-card absp330-compact-card">
           <b>🧠 How It Works</b>
-          <p>ABSP checks visible estimates, saved cache, shared backend intel, and safe auto-detected notes. As cleaner data builds up, total and STR/DEF/SPD/DEX ranges can narrow for everyone using the same backend.</p>
+          <p>ABSP checks visible estimates, saved cache, attack logs, shared backend intel, and safe auto-detected notes. Fight results help narrow totals and STR/DEF/SPD/DEX ranges; temp/armor notes save when they can be detected.</p>
         </div>
 
         <div class="absp330-card absp330-compact-card">
@@ -224,6 +224,81 @@
   }
 
   function login(){state.key=document.getElementById('absp330-key')?.value.trim()||'';state.ff=!!document.getElementById('absp330-ff')?.checked;GM_setValue(KEY.api,state.key);GM_setValue(KEY.ff,state.ff);req('POST','/api/login',{api_key:state.key}).then(r=>{if(r?.ok){state.user=r.user;state.total=Number(r.stats?.total||0);state.stats={strength:r.stats?.strength||0,defense:r.stats?.defense||0,speed:r.stats?.speed||0,dexterity:r.stats?.dexterity||0};GM_setValue(KEY.user,JSON.stringify(state.user));GM_setValue(KEY.total,state.total);GM_setValue(KEY.stats,JSON.stringify(state.stats))}else alert('Login failed: '+(r?.error||'unknown'));renderPanel();schedule(80)})}
+
+  function lastAttackTarget(){
+    const saved=safeJson(GM_getValue('absp_last_attack_target','null'));
+    if(saved?.id && Date.now()-(saved.ts||0)<45*60*1000) return Number(saved.id);
+    return extractId(location.href);
+  }
+  function detectTempFromLog(text){
+    const t=String(text||'');
+    const list=['Tear Gas Grenade','Smoke Grenade','Flash Grenade','Pepper Spray','Melatonin','Epinephrine','Grenade','HEG','Concussion Grenade','Sand','Claymore Mine'];
+    for(const x of list){const re=new RegExp(x.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i'); if(re.test(t)) return x;}
+    if(/threw .* grenade/i.test(t)) return 'Grenade used';
+    if(/temporary weapon|temp weapon|temp used/i.test(t)) return 'Temp used';
+    return '';
+  }
+  function detectArmorFromLog(text){
+    const t=String(text||'').toLowerCase();
+    if(/riot|dune|marauder|sentinel|eod|helmet|vest|body armor|armor/.test(t)) return 'Auto-detected armor mention';
+    return '';
+  }
+  function detectFightResult(text){
+    const me=String(state.user?.name||'').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const t=String(text||'').replace(/\s+/g,' ');
+    if(me){
+      if(new RegExp(me+'\\s+lost to','i').test(t)) return 'generic_loss';
+      if(new RegExp(me+'\\s+was defeated by','i').test(t)) return 'generic_loss';
+      if(new RegExp(me+'\\s+defeated|'+me+'\\s+won against|'+me+'\\s+hospitalized','i').test(t)) return 'generic_win';
+    }
+    if(/you lost|lost to/i.test(t)) return 'generic_loss';
+    if(/you won|you defeated|hospitalized/i.test(t)) return 'generic_win';
+    return '';
+  }
+  function maybeAutoFeedAttackLog(){
+    const pageText=(document.body?.innerText||'');
+    const isFight=/loader\.php\?sid=attack|attack log|Attacking|initiated an attack|lost to|fired .* rounds|threw .* grenade/i.test(location.href+' '+document.title+' '+pageText.slice(0,1600));
+    if(!isFight) return;
+    if(!state.user?.user_id || !state.total) return;
+    const text=pageText.replace(/\s+/g,' ');
+    const targetId=lastAttackTarget();
+    if(!targetId) return;
+    const result=detectFightResult(text);
+    const temp=detectTempFromLog(text);
+    const armor=detectArmorFromLog(text);
+    const bucket=Math.floor(Date.now()/600000);
+    if(result){
+      const feedKey='absp_auto_fight_'+targetId+'_'+result+'_'+bucket;
+      if(!GM_getValue(feedKey,'')){
+        GM_setValue(feedKey,'1');
+        req('POST','/api/attack/result',{
+          attacker_id:state.user.user_id,
+          attacker_name:state.user.name,
+          attacker_total:state.total,
+          attacker_stats:state.stats||{},
+          target_id:targetId,
+          target_name:'',
+          result,
+          fight_meta:{source:'auto attack-log parser',version:VERSION,temp_used:temp,armor_seen:armor}
+        }).then(r=>{if(r?.ok&&r.player){saveIntel(targetId,r.player);schedule(150);}});
+      }
+    }
+    if(temp || armor){
+      const traitKey='absp_auto_trait_'+targetId+'_'+temp+'_'+armor+'_'+Math.floor(Date.now()/3600000);
+      if(!GM_getValue(traitKey,'')){
+        GM_setValue(traitKey,'1');
+        req('POST','/api/target/flags',{
+          target_id:targetId,
+          estimate_total:Number(getIntel(targetId)?.total||getIntel(targetId)?.best_total||1),
+          your_total:state.total,
+          armor_seen:armor||undefined,
+          temp_used_often:temp||undefined,
+          source_detail:'auto attack-log trait parser '+VERSION
+        }).then(r=>{if(r?.ok&&r.player){saveIntel(targetId,r.player);schedule(150);}});
+      }
+    }
+  }
+
   function boot(){initUI();setTimeout(()=>schedule(500),1200);setTimeout(()=>schedule(900),3500);let lastMutation=0;try{const obs=new MutationObserver(mutations=>{const now=Date.now();const gap=(location.href.includes('factions.php')||location.href.includes('war.php'))?2200:900;if(now-lastMutation<gap)return;lastMutation=now;let root=document;for(const m of mutations){for(const n of m.addedNodes){if(n&&n.nodeType===1&&n.querySelector){root=n;break}}}schedule(gap,root)});obs.observe(document.body,{childList:true,subtree:true})}catch{}setInterval(()=>{mountIcon();if(Date.now()-state.lastPaint>9000)schedule(800)},3000)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
 })();
