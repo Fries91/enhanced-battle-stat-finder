@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.1.1
-// @description  BSP-style attach build: blocks faction chat, attaches only beside real Torn player links/names, loads all valid links on the current page.
+// @version      3.1.2
+// @description  BSP-style name-strip build: uses XID/user2ID to identify players but attaches badges only to the player honor/name strip, never action buttons or score columns.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -292,41 +292,181 @@
     return extractId(location.href) || extractId(document.body?.innerHTML || '');
   }
 
+
+  function isActionArea(el){
+    let n = el;
+    for(let i=0; i<6 && n && n !== document.body; i++, n=n.parentElement){
+      const t = txt(n);
+      const cls = String(n.className || '').toLowerCase();
+      const id = String(n.id || '').toLowerCase();
+      if(/actions|action/i.test(t) && t.length < 260) return true;
+      if(/actions|action-buttons|profile-buttons|user-actions/.test(cls + ' ' + id)) return true;
+
+      const buttons = n.querySelectorAll?.('button,a,[onclick]')?.length || 0;
+      const r = n.getBoundingClientRect?.();
+      if(r && buttons >= 6 && r.height < 260 && /Actions/i.test(t)) return true;
+    }
+    return false;
+  }
+
+  function rowForLink(a){
+    let n = a;
+    for(let i=0; i<8 && n && n !== document.body; i++, n=n.parentElement){
+      if(isBadArea(n)) return null;
+      const r = n.getBoundingClientRect?.();
+      if(!r || r.width < 220 || r.height < 22) continue;
+      const t = txt(n);
+      const hasRowWords = /\bOkay\b|\bHospital\b|\bJail\b|\bTravel\b|\bAbroad\b|\bAttack\b|Reason:|Level:\s*\d+/i.test(t);
+      const hasId = !!n.querySelector?.('a[href*="profiles.php"],a[href*="XID="],a[href*="user2ID"],a[href*="sid=attack"]');
+      if(hasId && hasRowWords) return n;
+    }
+    return null;
+  }
+
+  function stripScore(el, row){
+    if(!el || !row) return -999;
+    const er = el.getBoundingClientRect?.();
+    const rr = row.getBoundingClientRect?.();
+    if(!er || !rr) return -999;
+
+    if(er.left > rr.left + rr.width * 0.58) return -999;
+
+    const ratio = er.width / Math.max(1, er.height);
+    if(er.width < 75 || er.width > 360 || er.height < 10 || er.height > 58 || ratio < 2.2) return -999;
+
+    const local = txt(el);
+    if(/Score|Status|Attack|Okay|Members|Level|Rank|Reason/i.test(local) && local.length < 80) return -999;
+
+    const cls = String(el.className || '').toLowerCase();
+    const st = String(el.getAttribute?.('style') || '').toLowerCase();
+
+    let score = 0;
+    if(st.includes('background-image')) score += 55;
+    if(cls.includes('honor')) score += 45;
+    if(cls.includes('name')) score += 35;
+    if(el.matches?.('a[href*="profiles.php"],a[href*="XID="]')) score += 25;
+    if(local && local.length <= 40 && /[a-z0-9_-]{2,}/i.test(local)) score += 20;
+    if(er.width >= 110) score += 12;
+    if(er.height <= 42) score += 10;
+    score += Math.min(35, er.width / 8);
+
+    return score;
+  }
+
+  function findNameStripInRow(row){
+    if(!row || isBadArea(row)) return null;
+
+    const candidates = [
+      ...row.querySelectorAll('a[href*="profiles.php"],a[href*="XID="],[class*="honor"],[class*="name"],[style*="background-image"]')
+    ];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const raw of candidates){
+      if(isBadArea(raw) || isActionArea(raw)) continue;
+
+      let el = raw;
+      for(let depth=0; depth<3 && el && el !== row.parentElement; depth++, el=el.parentElement){
+        if(!el || el === document.body) break;
+        const s = stripScore(el, row);
+        if(s > bestScore){
+          bestScore = s;
+          best = el;
+        }
+      }
+    }
+
+    return bestScore > 0 ? best : null;
+  }
+
+  function profileHonorStrip(){
+    if(!isProfilePage()) return null;
+
+    const blocks = [...document.querySelectorAll('div,section,li')].filter(el => {
+      const t = txt(el);
+      return /User Information/i.test(t) && !/Actions/i.test(t);
+    });
+
+    const searchRoots = blocks.length ? blocks.slice(0, 3) : [document.body];
+
+    let best = null;
+    let bestScore = -999;
+
+    for(const root of searchRoots){
+      const cands = [...root.querySelectorAll('a[href*="profiles.php"],a[href*="XID="],[class*="honor"],[class*="name"],[style*="background-image"]')];
+      for(const el of cands){
+        if(isBadArea(el) || isActionArea(el)) continue;
+        const r = el.getBoundingClientRect?.();
+        if(!r) continue;
+
+        if(r.top < 300 || r.height > 58 || r.width < 90) continue;
+
+        const ratio = r.width / Math.max(1, r.height);
+        if(ratio < 2.2) continue;
+
+        const cls = String(el.className || '').toLowerCase();
+        const st = String(el.getAttribute?.('style') || '').toLowerCase();
+        let s = 0;
+        if(st.includes('background-image')) s += 60;
+        if(cls.includes('honor')) s += 50;
+        if(cls.includes('name')) s += 35;
+        if(r.height <= 42) s += 15;
+        s += Math.min(40, r.width / 8);
+
+        if(s > bestScore){
+          bestScore = s;
+          best = el;
+        }
+      }
+    }
+
+    return bestScore > 0 ? best : null;
+  }
+
   function hostForLink(a){
-    if(!a || isBadArea(a)) return null;
+    if(!a || isBadArea(a) || isActionArea(a)) return null;
 
     const r = a.getBoundingClientRect?.();
     if(!r || r.bottom < -80 || r.top > innerHeight + 350) return null;
 
-    // BSP-style: attach beside the actual player profile link/name when possible.
-    // Do not attach to pure attack buttons/cells.
-    if(isAttackOnlyLink(a)) {
-      const row = a.closest('li, tr, [class*="row"], [class*="member"], [class*="user"], [class*="enemy"]');
-      if(!row || isBadArea(row)) return null;
-      const profile = row.querySelector('a[href*="profiles.php"],a[href*="XID="]');
-      if(profile && !isBadArea(profile)) return profile;
+    // Profile page: never attach to action buttons. Attach only to User Information honor strip.
+    if(isProfilePage()){
+      const strip = profileHonorStrip();
+      if(strip && !isBadArea(strip) && !isActionArea(strip)) return strip;
       return null;
     }
+
+    const row = rowForLink(a);
+
+    // War/faction/hospital/jail rows: use the left-side player honor/name strip in the row.
+    if(row){
+      const strip = findNameStripInRow(row);
+      if(strip && !isBadArea(strip) && !isActionArea(strip)) return strip;
+      return null;
+    }
+
+    // Non-row profile links only: attach beside the actual text link if it is not an icon/action.
+    if(isAttackOnlyLink(a)) return null;
 
     const t = txt(a);
     const ar = a.getBoundingClientRect();
 
-    // Reject tiny icons / nav links.
-    if(ar.width < 26 || ar.height < 8) return null;
+    if(ar.width < 40 || ar.height < 10 || ar.width > 360 || ar.height > 60) return null;
     if(/^(Messages|Events|Awards|Home|Items|City|Wheel|RR|Stocks)$/i.test(t)) return null;
 
-    // Prefer the anchor itself. BSP's stable behavior is link-based, not image-guessing.
     return a;
   }
 
   function gatherTargets(){
     const links = [...document.querySelectorAll(
-      'a[href*="profiles.php?XID="],a[href*="XID="],a[href*="user2ID="],a[href*="sid=attack"],[onclick*="profiles.php"],[onclick*="user2ID"],[data-userid],[data-user]'
+      'a[href*="profiles.php?XID="],a[href*="XID="],a[href*="user2ID="],a[href*="sid=attack"]'
     )];
 
     const out = [];
     const seenHost = new Set();
     const seenKey = new Set();
+    const seenProfileId = new Set();
 
     const profileFallback = currentProfileId();
 
@@ -347,10 +487,12 @@
       if(hr.width > 520 || hr.height > 90) continue;
 
       const key = 'xid:' + id + ':' + Math.round(hr.top / 12) + ':' + Math.round(hr.left / 12);
+      if(isProfilePage() && seenProfileId.has(id)) continue;
       if(seenKey.has(key) || seenHost.has(host)) continue;
 
       seenKey.add(key);
       seenHost.add(host);
+      if(isProfilePage()) seenProfileId.add(id);
       out.push({id, host, key});
     }
 
@@ -378,22 +520,44 @@
   }
 
   function badgeForHost(host, key){
-    if(!host || !key) return null;
+    if(!host || !key || isBadArea(host) || isActionArea(host)) return null;
 
-    // Do not insert into the link itself; place as a sibling just like BSP-style page injection.
-    let b = host.parentElement?.querySelector(`:scope > .absp-bsp-badge[data-key="${cssEscape(key)}"]`);
-    if(!b){
-      b = document.createElement('span');
-      b.className = 'absp-bsp-badge absp-bsp-unknown';
-      b.dataset.key = key;
-      b.textContent = 'N/A';
-      host.insertAdjacentElement('afterend', b);
+    const hostIsAnchor = host.matches?.('a[href*="profiles.php"],a[href*="XID="]');
+    let b;
+
+    if(hostIsAnchor){
+      // BSP-style text links: sibling beside the link.
+      b = host.parentElement?.querySelector(`:scope > .absp-bsp-badge[data-key="${cssEscape(key)}"]`);
+      if(!b){
+        b = document.createElement('span');
+        b.className = 'absp-bsp-badge absp-bsp-unknown';
+        b.dataset.key = key;
+        b.textContent = 'N/A';
+        host.insertAdjacentElement('afterend', b);
+      }
+      host.parentElement?.querySelectorAll(':scope > .absp-bsp-badge').forEach(x => {
+        if(x !== b && x.dataset.key === key) x.remove();
+      });
+    } else {
+      // Honor/name strip elements: lock the badge to the strip's right side.
+      b = host.querySelector(`:scope > .absp-bsp-badge[data-key="${cssEscape(key)}"]`);
+      if(!b){
+        b = document.createElement('span');
+        b.className = 'absp-bsp-badge absp-bsp-unknown';
+        b.dataset.key = key;
+        b.textContent = 'N/A';
+        host.appendChild(b);
+      }
+      const cs = getComputedStyle(host);
+      if(cs.position === 'static') host.style.position = 'relative';
+      b.style.position = 'absolute';
+      b.style.right = '4px';
+      b.style.top = '2px';
+      b.style.marginLeft = '0';
+      host.querySelectorAll(':scope > .absp-bsp-badge').forEach(x => {
+        if(x !== b) x.remove();
+      });
     }
-
-    // Remove duplicates next to the same host.
-    host.parentElement?.querySelectorAll(':scope > .absp-bsp-badge').forEach(x => {
-      if(x !== b && x.dataset.key === key) x.remove();
-    });
 
     return b;
   }
@@ -474,7 +638,7 @@
     }
 
     document.querySelectorAll('.absp-bsp-badge').forEach(b => {
-      if(!live.has(b.dataset.key) || isBadArea(b) || b.closest('[class*="chat" i],[id*="chat" i],[class*="message" i],[id*="message" i]')) b.remove();
+      if(!live.has(b.dataset.key) || isBadArea(b) || isActionArea(b) || b.closest('[class*="chat" i],[id*="chat" i],[class*="message" i],[id*="message" i]')) b.remove();
     });
   }
 
