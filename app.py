@@ -2,7 +2,7 @@ import os, time, json, sqlite3, requests
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 
-APP_NAME = "Advanced Battle Stat Predictor v3.2.2 Profile Icon + Safe Badge Click"
+APP_NAME = "Advanced Battle Stat Predictor v3.3.2 Per-Stat Shared Learning"
 DB_PATH = os.environ.get("DB_PATH", "data/enhanced_battle_stats.db")
 ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "3679030").split(",") if x.strip()}
 FF_SCOUTER_API_BASE = os.environ.get("FF_SCOUTER_API_BASE", "https://ffscouter.com").rstrip("/")
@@ -33,12 +33,10 @@ def clean_num(v):
     except Exception:
         return 0
 
-def fmt_short(n):
-    n = float(n or 0)
-    for unit, div in [("t",1e12),("b",1e9),("m",1e6),("k",1e3)]:
-        if abs(n) >= div:
-            return f"{n/div:.1f}{unit}".replace(".0", "")
-    return str(int(n))
+def ensure_col(con, table, name, ddl):
+    cols = {r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
+    if name not in cols:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 def ensure_db():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
@@ -71,6 +69,13 @@ def ensure_db():
           source_detail TEXT,
           updated_at INTEGER
         )""")
+        for col in [
+            ("str_low","REAL"),("str_high","REAL"),("def_low","REAL"),("def_high","REAL"),
+            ("spd_low","REAL"),("spd_high","REAL"),("dex_low","REAL"),("dex_high","REAL"),
+            ("armor_seen","TEXT"),("armor_detail","TEXT"),("temp_used_often","TEXT"),("temp_detail","TEXT"),
+            ("stat_style","TEXT")
+        ]:
+            ensure_col(con, "enemy_stats", col[0], col[1])
         con.execute("""
         CREATE TABLE IF NOT EXISTS attack_learning (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,12 +105,12 @@ ensure_db()
 SOURCE_PRIORITY = {
     "manual": 95,
     "spy": 95,
+    "style_feed": 76,
     "ffscouter": 70,
     "visible_ff_bsp": 68,
     "bsp_cache": 66,
-    "fight_learning": 40,
+    "fight_learning": 44,
 }
-
 
 def db():
     con = sqlite3.connect(DB_PATH)
@@ -120,7 +125,7 @@ def user_label(total, your_total):
     r = total / your_total
     if r <= .75:
         return "Easy"
-    if r <= 1.10:
+    if r <= 1.15:
         return "Fair"
     if r <= 1.35:
         return "Good"
@@ -128,29 +133,21 @@ def user_label(total, your_total):
         return "Difficult"
     return "Avoid"
 
-
 def risk_adjust_confidence(total, your_total, confidence, source):
-    try:
-        total = float(total or 0)
-        your_total = float(your_total or 0)
-        confidence = float(confidence or 0)
-    except Exception:
-        return confidence or 0
-
+    total = float(total or 0)
+    your_total = float(your_total or 0)
+    confidence = float(confidence or 0)
     if not total or not your_total:
         return confidence or 0
-
     src = str(source or "").lower()
     exact = ("spy" in src) or ("manual" in src) or ("exact" in src)
     ratio = total / your_total
-
     if exact:
         if ratio >= 10:
             confidence = min(confidence or 75, 75)
         elif ratio >= 5:
             confidence = min(confidence or 80, 80)
         return max(1, min(100, round(confidence)))
-
     if ratio >= 20:
         cap = 18
     elif ratio >= 10:
@@ -165,12 +162,7 @@ def risk_adjust_confidence(total, your_total, confidence, source):
         cap = 65
     else:
         cap = 78
-
-    if not confidence:
-        confidence = cap
-    confidence = min(confidence, cap)
-    return max(1, min(100, round(confidence)))
-
+    return max(1, min(100, round(min(confidence or cap, cap))))
 
 def normalize(row, your_total=0):
     if not row:
@@ -178,7 +170,7 @@ def normalize(row, your_total=0):
     d = dict(row)
     total = d.get("total") or d.get("estimate_total") or 0
     label = d.get("label") or user_label(total, your_total)
-    return {
+    out = {
         "user_id": int(d.get("user_id") or d.get("target_id") or 0),
         "name": d.get("name") or d.get("target_name") or "",
         "faction_id": d.get("faction_id") or d.get("target_faction_id"),
@@ -191,9 +183,72 @@ def normalize(row, your_total=0):
         "source": d.get("source") or "none",
         "source_detail": d.get("source_detail") or "",
         "updated_at": d.get("updated_at") or d.get("created_at") or 0,
+        "armor_seen": d.get("armor_seen") or "",
+        "armor_detail": d.get("armor_detail") or "",
+        "temp_used_often": d.get("temp_used_often") or "",
+        "temp_detail": d.get("temp_detail") or "",
+        "stat_style": d.get("stat_style") or "",
     }
+    for k in ["str","def","spd","dex"]:
+        out[f"{k}_low"] = round(float(d.get(f"{k}_low") or 0))
+        out[f"{k}_high"] = round(float(d.get(f"{k}_high") or 0))
+    # Also expose long names for older UI code.
+    out["strength_low"], out["strength_high"] = out["str_low"], out["str_high"]
+    out["defense_low"], out["defense_high"] = out["def_low"], out["def_high"]
+    out["speed_low"], out["speed_high"] = out["spd_low"], out["spd_high"]
+    out["dexterity_low"], out["dexterity_high"] = out["dex_low"], out["dex_high"]
+    return out
 
-def store_enemy(user_id, name, total, your_total=0, faction_id=None, confidence=50, source="manual", detail=""):
+def style_ranges(total_low, total_high, style):
+    style = str(style or "").lower()
+    if style == "def_tank":
+        shares = {"str":(.12,.30), "def":(.38,.66), "spd":(.08,.25), "dex":(.03,.18)}
+    elif style == "dex_tank":
+        shares = {"str":(.08,.28), "def":(.05,.24), "spd":(.12,.34), "dex":(.34,.62)}
+    elif style == "speed_tank":
+        shares = {"str":(.08,.28), "def":(.05,.24), "spd":(.34,.62), "dex":(.12,.34)}
+    else:
+        shares = {"str":(.15,.35), "def":(.15,.35), "spd":(.15,.35), "dex":(.15,.35)}
+    out = {}
+    for k,(lo,hi) in shares.items():
+        out[f"{k}_low"] = total_low * lo
+        out[f"{k}_high"] = total_high * hi
+    return out
+
+def ranges_from_fight(total_low, total_high, attacker_stats=None):
+    # Start broad, then bias by the attacker's own stat distribution if available.
+    stats = attacker_stats or {}
+    vals = {
+        "str": clean_num(stats.get("strength") or stats.get("str") or 0),
+        "def": clean_num(stats.get("defense") or stats.get("def") or 0),
+        "spd": clean_num(stats.get("speed") or stats.get("spd") or 0),
+        "dex": clean_num(stats.get("dexterity") or stats.get("dex") or 0),
+    }
+    s = sum(vals.values())
+    if s <= 0:
+        return style_ranges(total_low, total_high, "balanced")
+    out = {}
+    for k,v in vals.items():
+        share = max(.04, min(.75, v / s))
+        out[f"{k}_low"] = total_low * max(.03, share * .45)
+        out[f"{k}_high"] = total_high * min(.80, share * 1.85)
+    return out
+
+def merge_range(old_low, old_high, new_low, new_high, old_conf, new_conf):
+    old_low, old_high, new_low, new_high = map(lambda x: float(x or 0), [old_low, old_high, new_low, new_high])
+    if not new_low and not new_high:
+        return old_low, old_high
+    if not old_low and not old_high:
+        return new_low, new_high
+    # If ranges overlap, narrow by intersection. If not, weighted average.
+    lo, hi = max(old_low, new_low), min(old_high, new_high)
+    if lo and hi and lo < hi:
+        return lo, hi
+    w_old = max(1, float(old_conf or 1))
+    w_new = max(1, float(new_conf or 1))
+    return ((old_low*w_old + new_low*w_new)/(w_old+w_new), (old_high*w_old + new_high*w_new)/(w_old+w_new))
+
+def store_enemy(user_id, name, total, your_total=0, faction_id=None, confidence=50, source="manual", detail="", stat_ranges=None, armor_seen=None, temp_used_often=None, stat_style=None):
     user_id = int(user_id or 0)
     total = clean_num(total)
     if not user_id or not total:
@@ -201,35 +256,64 @@ def store_enemy(user_id, name, total, your_total=0, faction_id=None, confidence=
     label = user_label(total, your_total)
     ts = now_ts()
     low, high = total * .88, total * 1.12
+    stat_ranges = stat_ranges or {}
+    if stat_style and not any(stat_ranges.get(x) for x in ["str_low","def_low","spd_low","dex_low"]):
+        stat_ranges = style_ranges(low, high, stat_style)
     with db() as con:
-        old = con.execute("SELECT confidence, source FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
+        old = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
         old_conf = float(old["confidence"] or 0) if old else 0
         old_source = old["source"] if old else ""
         old_priority = SOURCE_PRIORITY.get(old_source, old_conf)
         new_priority = SOURCE_PRIORITY.get(source, confidence)
-        # Stronger intel wins; single-fight estimates fill blanks only.
-        if new_priority >= old_priority or old_conf < 45:
+        write = new_priority >= old_priority or old_conf < 45
+        if old:
+            # Keep useful old armor/temp/style unless new ones were provided.
+            armor_seen = armor_seen or old["armor_seen"]
+            temp_used_often = temp_used_often or old["temp_used_often"]
+            stat_style = stat_style or old["stat_style"]
+            for k in ["str","def","spd","dex"]:
+                nl, nh = stat_ranges.get(f"{k}_low"), stat_ranges.get(f"{k}_high")
+                ol, oh = old[f"{k}_low"], old[f"{k}_high"]
+                ml, mh = merge_range(ol, oh, nl, nh, old_conf, confidence)
+                stat_ranges[f"{k}_low"], stat_ranges[f"{k}_high"] = ml, mh
+        if write or any(stat_ranges.get(f"{k}_low") for k in ["str","def","spd","dex"]) or armor_seen or temp_used_often or stat_style:
             con.execute("""
             INSERT INTO enemy_stats
-            (user_id,name,faction_id,total,range_low,range_high,label,confidence,source,source_detail,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (user_id,name,faction_id,total,range_low,range_high,label,confidence,source,source_detail,updated_at,
+             str_low,str_high,def_low,def_high,spd_low,spd_high,dex_low,dex_high,armor_seen,temp_used_often,stat_style)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
               name=COALESCE(excluded.name, enemy_stats.name),
               faction_id=COALESCE(excluded.faction_id, enemy_stats.faction_id),
-              total=excluded.total,
-              range_low=excluded.range_low,
-              range_high=excluded.range_high,
+              total=CASE WHEN excluded.confidence >= enemy_stats.confidence OR enemy_stats.confidence < 45 THEN excluded.total ELSE enemy_stats.total END,
+              range_low=CASE WHEN excluded.confidence >= enemy_stats.confidence OR enemy_stats.confidence < 45 THEN excluded.range_low ELSE enemy_stats.range_low END,
+              range_high=CASE WHEN excluded.confidence >= enemy_stats.confidence OR enemy_stats.confidence < 45 THEN excluded.range_high ELSE enemy_stats.range_high END,
               label=excluded.label,
-              confidence=excluded.confidence,
-              source=excluded.source,
+              confidence=MAX(enemy_stats.confidence, excluded.confidence),
+              source=CASE WHEN excluded.confidence >= enemy_stats.confidence OR enemy_stats.confidence < 45 THEN excluded.source ELSE enemy_stats.source END,
               source_detail=excluded.source_detail,
-              updated_at=excluded.updated_at
-            """, (user_id, name, faction_id, total, low, high, label, confidence, source, detail, ts))
+              updated_at=excluded.updated_at,
+              str_low=COALESCE(excluded.str_low, enemy_stats.str_low),
+              str_high=COALESCE(excluded.str_high, enemy_stats.str_high),
+              def_low=COALESCE(excluded.def_low, enemy_stats.def_low),
+              def_high=COALESCE(excluded.def_high, enemy_stats.def_high),
+              spd_low=COALESCE(excluded.spd_low, enemy_stats.spd_low),
+              spd_high=COALESCE(excluded.spd_high, enemy_stats.spd_high),
+              dex_low=COALESCE(excluded.dex_low, enemy_stats.dex_low),
+              dex_high=COALESCE(excluded.dex_high, enemy_stats.dex_high),
+              armor_seen=COALESCE(excluded.armor_seen, enemy_stats.armor_seen),
+              temp_used_often=COALESCE(excluded.temp_used_often, enemy_stats.temp_used_often),
+              stat_style=COALESCE(excluded.stat_style, enemy_stats.stat_style)
+            """, (
+                user_id, name, faction_id, total, low, high, label, confidence, source, detail, ts,
+                stat_ranges.get("str_low"), stat_ranges.get("str_high"), stat_ranges.get("def_low"), stat_ranges.get("def_high"),
+                stat_ranges.get("spd_low"), stat_ranges.get("spd_high"), stat_ranges.get("dex_low"), stat_ranges.get("dex_high"),
+                armor_seen, temp_used_often, stat_style
+            ))
         row = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (user_id,)).fetchone()
     return normalize(row, your_total)
 
 def torn_get(api_key, selection):
-    # Torn v1 style works broadly and is stable for limited key.
     url = f"https://api.torn.com/user/?selections={selection}&key={api_key}"
     r = requests.get(url, timeout=20, headers={"User-Agent": APP_NAME})
     data = r.json()
@@ -296,10 +380,35 @@ def intel_bulk():
 @app.post("/api/estimate/manual")
 def estimate_manual():
     body = request.get_json(force=True)
+    stat_ranges = {k: clean_num(body.get(k)) for k in ["str_low","str_high","def_low","def_high","spd_low","spd_high","dex_low","dex_high"] if body.get(k) is not None}
     p = store_enemy(
         body.get("target_id"), body.get("target_name"), body.get("estimate_total"),
         body.get("your_total"), body.get("target_faction_id"), body.get("confidence") or 70,
-        body.get("source") or "manual", body.get("source_detail") or "manual/import"
+        body.get("source") or "manual", body.get("source_detail") or "manual/import",
+        stat_ranges=stat_ranges,
+        armor_seen=body.get("armor_seen"),
+        temp_used_often=body.get("temp_used_often"),
+        stat_style=body.get("stat_style")
+    )
+    return jsonify({"ok": bool(p), "player": p})
+
+@app.post("/api/target/flags")
+def target_flags():
+    body = request.get_json(force=True)
+    target_id = int(body.get("target_id") or 0)
+    if not target_id:
+        return jsonify({"ok": False, "error": "Missing target_id"}), 400
+    with db() as con:
+        row = con.execute("SELECT * FROM enemy_stats WHERE user_id=?", (target_id,)).fetchone()
+    total = (row["total"] if row else clean_num(body.get("estimate_total"))) or 1
+    p = store_enemy(
+        target_id, body.get("target_name") or (row["name"] if row else ""), total, body.get("your_total"),
+        confidence=max(55, float(row["confidence"] or 0) if row else 55),
+        source="style_feed" if body.get("stat_style") else (row["source"] if row else "manual"),
+        detail="armor/temp/stat style feed",
+        armor_seen=body.get("armor_seen"),
+        temp_used_often=body.get("temp_used_often"),
+        stat_style=body.get("stat_style")
     )
     return jsonify({"ok": bool(p), "player": p})
 
@@ -310,11 +419,11 @@ def estimate_from_fight(attacker_total, result):
         return None
     if result == "easy_win":
         low, high, conf = t*.05, t*.70, 42
-    elif result in ("close_win",):
+    elif result == "close_win":
         low, high, conf = t*.75, t*1.05, 48
     elif result in ("generic_win","auto_win"):
         low, high, conf = t*.55, t*1.00, 42
-    elif result in ("close_loss",):
+    elif result == "close_loss":
         low, high, conf = t*.95, t*1.25, 48
     elif result in ("generic_loss","auto_loss"):
         low, high, conf = t*1.00, t*1.55, 42
@@ -344,7 +453,8 @@ def attack_result():
     player = None
     if est:
         total, low, high, conf = est
-        player = store_enemy(target_id, target_name, total, attacker_total, None, conf, "fight_learning", f"single fight: {result}")
+        stat_ranges = ranges_from_fight(low, high, body.get("attacker_stats") or {})
+        player = store_enemy(target_id, target_name, total, attacker_total, None, conf, "fight_learning", f"single fight: {result}", stat_ranges=stat_ranges)
     return jsonify({"ok": True, "player": player})
 
 def parse_ff_payload(payload):
@@ -371,14 +481,7 @@ def parse_ff_payload(payload):
         est = r.get("bs_estimate") or r.get("battle_stats_estimate") or r.get("estimated_stats") or r.get("estimate") or r.get("total")
         tid, est = int(clean_num(tid)), clean_num(est)
         if tid and est:
-            out[tid] = {
-            "total": est,
-            "detail": " • ".join(str(x) for x in [
-                r.get("bs_estimate_human") or r.get("estimate_human") or "FF Scouter base",
-                ("FF " + str(r.get("fair_fight"))) if r.get("fair_fight") is not None else "",
-                ("updated " + str(r.get("last_updated"))) if r.get("last_updated") else "",
-            ] if x)
-        }
+            out[tid] = {"total": est, "detail": "FF Scouter base"}
     return out
 
 @app.post("/api/ffscouter/base-import")
@@ -421,3 +524,6 @@ def learning_recent():
     with db() as con:
         rows = con.execute("SELECT * FROM attack_learning ORDER BY created_at DESC LIMIT 50").fetchall()
     return jsonify({"ok": True, "rows": [dict(x) for x in rows]})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
