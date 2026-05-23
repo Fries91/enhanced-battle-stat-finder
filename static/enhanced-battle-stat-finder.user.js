@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.3.3
-// @description  Feed the Finder build: auto-only shared learning, STR/DEF/SPD/DEX ranges, armor/temp auto-notes, old-style popup, profile icon, and safe badge clicks.
+// @version      3.3.4
+// @description  Feed the Finder compact auto-only build: shared learning, STR/DEF/SPD/DEX ranges, armor/temp auto notes, profile icon, and safe badge clicks.
 // @author       Fries91
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/bringafriend.php*
@@ -34,8 +34,8 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.3.3';
-  const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v333', sent:'absp_shared_sent_v333', ff:'absp_ff_enabled' };
+  const VERSION = '3.3.4';
+  const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v334', sent:'absp_shared_sent_v334', ff:'absp_ff_enabled' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
 
   GM_addStyle(`
@@ -156,9 +156,6 @@
           <div><b>Armor</b><span>${esc(armorText(intel))}</span></div>
           <div><b>Temp</b><span>${esc(tempText(intel))}</span></div>
         </div>
-        <div style="margin-top:10px;padding:8px;border-radius:10px;background:#020617;border:1px solid #334155;color:#bfdbfe;line-height:1.4">
-          Auto-only mode is on. ABSP feeds shared learning from visible FF/BSP estimates, backend intel, cached estimates, and auto-detected armor/temp notes. No manual trait buttons.
-        </div>
       </div>`;
     document.body.appendChild(pop);
     const r=badge.getBoundingClientRect();
@@ -180,40 +177,52 @@
       <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp330-close">Close</button></h2>
       <div class="body">
         <div class="absp330-hero">
-          <div class="absp330-hero-title">🍽️ Feed the Finder</div>
-          <div style="color:#cbd5e1;margin-top:4px;line-height:1.35">Funny enough to feed the stat gremlin, serious enough to not get anyone cooked. Shared intel saves to the backend so everyone using this app can see better predictions.</div>
-          <span class="absp330-chip">Old intel popup restored</span>
+          <div class="absp330-hero-title">🍽️ Feed the Finder <span style="font-size:11px;color:#fef3c7">v${VERSION}</span></div>
+          <div style="color:#cbd5e1;margin-top:4px;line-height:1.3">
+            Compact auto-only mode. ABSP reads allowed visible intel, cached estimates, and shared backend records without manual trait inputs.
+          </div>
+          <span class="absp330-chip">Auto-only</span>
           <span class="absp330-chip">Shared learning</span>
-          <span class="absp330-chip">v${VERSION}</span>
+          <span class="absp330-chip">STR/DEF/SPD/DEX</span>
+          <span class="absp330-chip">Armor/Temp</span>
         </div>
-        <div class="absp330-card"><b>📜 Rules — funny, but serious</b>
-          <ul>
-            <li><b>No manual guessing.</b> This build is auto-only for traits and shared learning.</li>
-            <li><b>N/A means “I’m starving.”</b> ABSP has no safe intel yet, so it will not fake numbers.</li>
-            <li><b>Green is not a free buffet.</b> Estimates are guidance, not guaranteed wins.</li>
-            <li><b>Old intel gets crusty.</b> Stats change, armor changes, and cached notes can go stale.</li>
-            <li><b>Use it clean.</b> Respect Torn rules, fair-use behavior, and limited-key access.</li>
-          </ul></div>
-        <div class="absp330-card"><b>🧠 How It Works — auto in, prediction out</b>
-          <p><b>Advanced Battle Stat Predictor</b> places badges using BSP-style mount points, then fetches shared backend intel by Torn target ID.</p>
-          <p>It can auto-share visible FF/BSP-style estimates, cached estimates, and safe armor/temp notes it can detect from the page.</p>
-          <p>STR / DEF / SPD / DEX ranges improve only when the backend has enough safe learned data. Unknown means ABSP is refusing to make things up.</p>
-          <p>Tap a badge to open intel without clicking the player name or attack link behind it.</p></div>
-        <div class="absp330-card"><b>✅ Terms of Service</b>
-          <p>ABSP is an estimate helper. It does not guarantee exact stats, wins, losses, respect gains, fair-fight values, armor, or temporary weapon usage.</p>
-          <p>You are responsible for your attacks and choices. Treat predictions as scouting hints, not a promise button.</p>
-          <p>This script is designed to organize allowed information visible to you, safely cached by you, or returned by your shared ABSP backend.</p></div>
-        <div class="absp330-card"><b>🔑 API Key Use & Storage</b>
-          <p>Use a <b>limited Torn API key only</b>. ABSP never asks for your Torn password.</p>
-          <p>Your key is saved locally in PDA/browser userscript storage so ABSP can identify your profile and compare targets against your own battle stats.</p>
-          <p>Shared backend data is stored by target ID for prediction support. API access should stay limited, minimal, and rule-friendly.</p></div>
-        <div class="absp330-card"><b>🍽️ Login — Feed the Finder</b><input id="absp330-key" type="password" placeholder="Torn limited API key" value="${esc(state.key||'')}"><label style="display:block;margin:8px 0;color:#dbeafe"><input id="absp330-ff" type="checkbox" ${state.ff?'checked':''} style="width:auto"> Use FF/BSP visible/base intel when available</label><button id="absp330-login">Login / Save</button><button id="absp330-repaint">Repaint badges</button><div class="absp330-status">Status: ${state.user?.name?`${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}`:'Not logged in'}</div></div>
+
+        <div class="absp330-card absp330-compact-card">
+          <b>📜 Rules</b>
+          <p><b>No fake numbers.</b> Unknown means ABSP does not have safe intel yet. Estimates are guidance only, not guaranteed wins. Keep usage fair, clean, and within Torn rules.</p>
+        </div>
+
+        <div class="absp330-card absp330-compact-card">
+          <b>🧠 How It Works</b>
+          <p>ABSP checks visible estimates, saved cache, shared backend intel, and safe auto-detected notes. As cleaner data builds up, total and STR/DEF/SPD/DEX ranges can narrow for everyone using the same backend.</p>
+        </div>
+
+        <div class="absp330-card absp330-compact-card">
+          <b>✅ ToS</b>
+          <p>ABSP is only a helper. You choose your targets and accept the results. It cannot promise exact stats, wins, losses, fair-fight values, armor, or temporary weapon use.</p>
+        </div>
+
+        <div class="absp330-card absp330-compact-card">
+          <b>🔑 API & Storage</b>
+          <p>Use a <b>limited Torn API key</b>. No password is requested. Your key is saved locally in PDA/browser storage. Shared prediction data is stored by target ID for estimate support only.</p>
+        </div>
+
+        <div class="absp330-card absp330-login-card">
+          <b>🍽️ Login</b>
+          <input id="absp330-key" type="password" placeholder="Torn limited API key" value="${esc(state.key||'')}">
+          <label style="display:block;margin:6px 0;color:#dbeafe"><input id="absp330-ff" type="checkbox" ${state.ff?'checked':''} style="width:auto"> Use visible estimates when available</label>
+          <button id="absp330-login">Save</button>
+          <button id="absp330-repaint">Repaint</button>
+          <div class="absp330-status">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}` : 'Not logged in'}</div>
+        </div>
       </div>`;
-    p.querySelector('#absp330-close').onclick=()=>{state.panelOpen=false;renderPanel()};
+
+    p.querySelector('#absp330-close').onclick=()=>{ state.panelOpen=false; renderPanel(); };
     p.querySelector('#absp330-login').onclick=login;
     p.querySelector('#absp330-repaint').onclick=()=>schedule(50);
     mountIcon();
   }
+
   function login(){state.key=document.getElementById('absp330-key')?.value.trim()||'';state.ff=!!document.getElementById('absp330-ff')?.checked;GM_setValue(KEY.api,state.key);GM_setValue(KEY.ff,state.ff);req('POST','/api/login',{api_key:state.key}).then(r=>{if(r?.ok){state.user=r.user;state.total=Number(r.stats?.total||0);state.stats={strength:r.stats?.strength||0,defense:r.stats?.defense||0,speed:r.stats?.speed||0,dexterity:r.stats?.dexterity||0};GM_setValue(KEY.user,JSON.stringify(state.user));GM_setValue(KEY.total,state.total);GM_setValue(KEY.stats,JSON.stringify(state.stats))}else alert('Login failed: '+(r?.error||'unknown'));renderPanel();schedule(80)})}
   function boot(){initUI();setTimeout(()=>schedule(500),1200);setTimeout(()=>schedule(900),3500);let lastMutation=0;try{const obs=new MutationObserver(mutations=>{const now=Date.now();const gap=(location.href.includes('factions.php')||location.href.includes('war.php'))?2200:900;if(now-lastMutation<gap)return;lastMutation=now;let root=document;for(const m of mutations){for(const n of m.addedNodes){if(n&&n.nodeType===1&&n.querySelector){root=n;break}}}schedule(gap,root)});obs.observe(document.body,{childList:true,subtree:true})}catch{}setInterval(()=>{mountIcon();if(Date.now()-state.lastPaint>9000)schedule(800)},3000)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
