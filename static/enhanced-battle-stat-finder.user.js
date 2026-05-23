@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.1.2
-// @description  BSP-style name-strip build: uses XID/user2ID to identify players but attaches badges only to the player honor/name strip, never action buttons or score columns.
+// @version      3.1.3
+// @description  BSP exact mount build: mounts on the same target nodes BSP uses while keeping ABSP learning/cache/backend features.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @grant        GM_addStyle
@@ -903,4 +903,202 @@
   }
 
   boot();
+
+
+  /* v3.1.3 BSP exact mount override
+     Uses BSP-style injection targets instead of row/score/action cells.
+     Keeps ABSP learning/cache/backend/popup/colors. */
+
+  function absp313Text(el){ return String(el?.textContent || '').replace(/\s+/g,' ').trim(); }
+
+  function absp313IsChat(el){
+    let n = el;
+    for(let i=0; i<10 && n && n !== document.body; i++, n=n.parentElement){
+      const s = String((n.className || '') + ' ' + (n.id || '') + ' ' + (n.getAttribute?.('aria-label') || '')).toLowerCase();
+      const t = absp313Text(n);
+      if(/chat|message|msg|conversation|channel|compose|textarea|chatbox|chat-box|chatwindow|chat-window/.test(s)) return true;
+      if(/Type your message here|Last message:|New message|send message/i.test(t)) return true;
+    }
+    return false;
+  }
+
+  function absp313BadMount(el){
+    if(!el || absp313IsChat(el)) return true;
+    let n = el;
+    for(let i=0; i<8 && n && n !== document.body; i++, n=n.parentElement){
+      const s = String((n.className || '') + ' ' + (n.id || '')).toLowerCase();
+      const t = absp313Text(n);
+      if(n.closest?.('#absp-bsp-panel,.absp-pop')) return true;
+      if(/tooltip|tip|popover|dialog|modal|profile-mini|preview|hover|dropdown|context/.test(s)) return true;
+      if(/Cash Me if You Can|Best of the Lot|THIEF|LOOKOUT|PICKLOCK|MUSCLE|IMITATOR|CAR THIEF|JOIN|24hrs/i.test(t)) return true;
+      if(/Battle Stats|Strength|Defense|Speed|Dexterity|Job Information|Property Information|Company|Income|Fees|Rating/i.test(t)) return true;
+      if(/Messages|Events|Awards|Home|Items|City|Wheel|Stocks/i.test(t) && t.length < 100) return true;
+    }
+    return false;
+  }
+
+  function absp313IdFromLink(a){
+    if(!a) return null;
+    try{
+      const href = a.href || a.getAttribute?.('href') || '';
+      let m = href.match(/[?&]XID=(\d{3,10})/i);
+      if(m) return Number(m[1]);
+      m = href.match(/[?&]user2ID=(\d{3,10})/i);
+      if(m) return Number(m[1]);
+      const blob = [href, a.getAttribute?.('onclick'), a.outerHTML].filter(Boolean).join(' ');
+      m = blob.match(/(?:XID|user2ID|userID|targetID|data-userid|data-user|data-id)[=\\"':%26 ]+(\d{3,10})/i);
+      if(m) return Number(m[1]);
+    }catch(e){}
+    return null;
+  }
+
+  function absp313Visible(el){
+    const r = el?.getBoundingClientRect?.();
+    if(!r) return false;
+    return r.width > 0 && r.height > 0 && r.bottom >= -120 && r.top <= innerHeight + 500;
+  }
+
+  function absp313LooksAction(el){
+    let n = el;
+    for(let i=0; i<5 && n && n !== document.body; i++, n=n.parentElement){
+      const t = absp313Text(n);
+      const cls = String(n.className || '').toLowerCase();
+      if(/Actions/i.test(t) && t.length < 280) return true;
+      if(/actions|action-buttons|profile-buttons|user-actions/.test(cls)) return true;
+      if(/\bAttack\b/i.test(t) && n.getBoundingClientRect?.().width < 155) return true;
+    }
+    return false;
+  }
+
+  function absp313HonorTargetFromLink(a){
+    if(!a || absp313BadMount(a)) return null;
+    const isWall = String(a.className || '') === 'user name ';
+    if(a.rel === 'noopener noreferrer' || isWall) return a;
+
+    // BSP's faction logic walks children and uses the IMG child or the container holding the IMG.
+    for(const child of [...a.children]){
+      if(!child || absp313BadMount(child)) continue;
+      if(child.tagName === 'IMG') return child.parentElement || a;
+      if(child.querySelector?.('img')) return child;
+      const st = String(child.getAttribute?.('style') || '').toLowerCase();
+      const cls = String(child.className || '').toLowerCase();
+      if(st.includes('background-image') || cls.includes('honor') || cls.includes('honorwrap') || cls.includes('name')) return child;
+    }
+
+    // BSP's newer Torn grid uses parent honorWrap/dataGridData.
+    const p = a.parentElement;
+    if(p && String(p.className || '').includes('honorWrap')) return p;
+    if(p && String(p.className || '').includes('dataGridData')) return p;
+
+    if(absp313LooksAction(a)) return null;
+
+    // Generic text link fallback only if it is a normal name-sized link.
+    const r = a.getBoundingClientRect?.();
+    const t = absp313Text(a);
+    if(r && r.width >= 40 && r.height >= 10 && r.width < 360 && r.height < 60 && t && !/Attack|Message|Bounty|Trade|Faction|Company/i.test(t)) return a;
+    return null;
+  }
+
+  function absp313ProfileTarget(){
+    if(typeof isProfilePage !== 'function' || !isProfilePage()) return null;
+    const buttons = document.querySelector('.buttons-wrap');
+    if(buttons && !absp313BadMount(buttons)) return buttons;
+    const info = document.querySelector('.user-information');
+    if(info && !absp313BadMount(info)) return info;
+    return null;
+  }
+
+  function absp313CurrentProfileId(){
+    if(typeof currentProfileId === 'function'){
+      const id = currentProfileId();
+      if(id) return Number(id);
+    }
+    const m = String(location.href).match(/[?&]XID=(\d{3,10})/i);
+    return m ? Number(m[1]) : null;
+  }
+
+  function absp313AttackTarget(){
+    if(!/loader\.php\?sid=attack/i.test(location.href)) return null;
+    const node = Array.from(document.querySelectorAll('*')).find(el => String(el.className || '').includes('titleContainer'));
+    return node && !absp313BadMount(node) ? node : null;
+  }
+
+  function absp313GatherTargets(){
+    const out = [];
+    const seen = new Set();
+
+    // Profile page exactly like BSP: buttons-wrap/player profile container, not random action icons.
+    const pid = absp313CurrentProfileId();
+    if(pid && typeof isProfilePage === 'function' && isProfilePage()){
+      const host = absp313ProfileTarget();
+      if(host) return [{id:pid, host, key:'profile:' + pid}];
+    }
+
+    // Attack page exactly like BSP: titleContainer.
+    const attackId = (String(location.href).match(/[?&]user2ID=(\d{3,10})/i) || [])[1];
+    if(attackId){
+      const host = absp313AttackTarget();
+      if(host) return [{id:Number(attackId), host, key:'attack:' + attackId}];
+    }
+
+    const links = [...document.querySelectorAll('a[href*="profiles.php?XID="],a[href^="/profiles.php?"],a[href*="XID="]')];
+    for(const a of links){
+      if(!absp313Visible(a) || absp313BadMount(a)) continue;
+      const id = absp313IdFromLink(a);
+      if(!id) continue;
+      const host = absp313HonorTargetFromLink(a);
+      if(!host || !absp313Visible(host) || absp313BadMount(host)) continue;
+      const r = host.getBoundingClientRect();
+      const key = 'bsp:' + id + ':' + Math.round(r.top/10) + ':' + Math.round(r.left/10);
+      if(seen.has(key)) continue;
+      seen.add(key);
+      out.push({id, host, key});
+    }
+
+    // BSP legacy generic .user.name fallback.
+    document.querySelectorAll('.user.name').forEach(el=>{
+      if(!absp313Visible(el) || absp313BadMount(el)) return;
+      const raw = el.innerHTML + ' ' + (el.title || '');
+      const m = raw.match(/\[(\d{3,10})\]/);
+      if(!m) return;
+      const id = Number(m[1]);
+      const r = el.getBoundingClientRect();
+      const key = 'user.name:' + id + ':' + Math.round(r.top/10) + ':' + Math.round(r.left/10);
+      if(seen.has(key)) return;
+      seen.add(key);
+      out.push({id, host:el, key});
+    });
+    return out;
+  }
+
+  function absp313BadgeForHost(host, key){
+    if(!host || !key || absp313BadMount(host)) return null;
+    document.querySelectorAll('.absp-bsp-badge').forEach(b=>{ if(absp313BadMount(b)) b.remove(); });
+    let b = host.querySelector?.(`:scope > .absp-bsp-badge[data-key="${cssEscape(key)}"]`);
+    if(!b){
+      b = document.createElement('span');
+      b.className = 'absp-bsp-badge absp-bsp-unknown';
+      b.dataset.key = key;
+      b.textContent = 'N/A';
+
+      const isTextLink = host.matches?.('a[href*="profiles.php"],a[href*="XID="]') && !host.querySelector?.('img,[style*="background-image"],[class*="honor"]');
+      if(isTextLink && host.parentElement && !absp313BadMount(host.parentElement)){
+        host.insertAdjacentElement('afterend', b);
+      } else {
+        const cs = getComputedStyle(host);
+        if(cs.position === 'static') host.style.position = 'relative';
+        b.style.position = 'absolute';
+        b.style.right = '4px';
+        b.style.top = '2px';
+        b.style.marginLeft = '0';
+        host.appendChild(b);
+      }
+    }
+    host.querySelectorAll?.(':scope > .absp-bsp-badge').forEach(x=>{ if(x !== b) x.remove(); });
+    return b;
+  }
+
+  gatherTargets = absp313GatherTargets;
+  badgeForHost = absp313BadgeForHost;
+
 })();
