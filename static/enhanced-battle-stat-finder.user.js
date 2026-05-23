@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.2.1
-// @description  Clean BSP true-mount build: uses BSP's exact target collection/insertion style, while keeping ABSP learning/cache/backend features.
+// @version      3.2.2
+// @description  BSP true-mount build: profile Actions icon opens ABSP overlay; stat badge click opens intel only and never clicks attack/player link behind it.
 // @author       Fries91
 // @match        https://www.torn.com/profiles.php*
 // @match        https://www.torn.com/bringafriend.php*
@@ -80,9 +80,17 @@
     .absp321-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
 
     #absp321-main{
-      display:none;position:fixed;left:16px;bottom:116px;z-index:999996;
-      width:42px;height:42px;border-radius:10px;border:1px solid #806500;
-      background:#111827;color:#fde68a;font-size:22px;box-shadow:0 2px 10px #000c;touch-action:none
+      display:none!important;
+      width:42px!important;height:42px!important;border-radius:10px!important;
+      border:1px solid #806500!important;background:#111827!important;color:#fde68a!important;
+      font-size:22px!important;box-shadow:0 2px 10px #000c!important;
+      touch-action:none!important;z-index:35!important;position:relative!important;
+      align-items:center!important;justify-content:center!important;
+    }
+    #absp321-main.absp321-main-visible{display:inline-flex!important}
+    .absp321-main-wrap{
+      display:inline-flex!important;align-items:center!important;justify-content:center!important;
+      margin:4px!important;position:relative!important;z-index:35!important
     }
 
     #absp321-panel{
@@ -351,6 +359,7 @@
     if(!node) return false;
     if(node.className === "TDup_ColoredStatsInjectionDiv") return true;
     if(String(node.className || '').includes('absp321-inject')) return true;
+    if(String(node.className || '').includes('absp321-badge')) return true;
     if(node.href !== undefined && String(node.href).startsWith(urlAttack)) return true;
 
     for(let i=0; i<node.childNodes.length; i++){
@@ -647,6 +656,8 @@
   }
 
   function buildGridInjection(targetId, mount, intel){
+    // v3.2.2: do NOT wrap the prediction badge in an attack/player link.
+    // It still mounts where BSP mounts, but tapping the badge opens ABSP intel only.
     const urlAttack = URL_TORN_ATTACK + targetId;
 
     if(IsThereMyNodeAlready(mount, urlAttack)) return null;
@@ -659,21 +670,14 @@
       div.style.margin = marginForMount(mount);
     }
 
-    const a = document.createElement("a");
-    a.href = urlAttack;
-    a.target = "_blank";
-    a.addEventListener('click', e => {
-      // Let attack link open, but also remember target.
-      GM_setValue('absp_last_attack_target', JSON.stringify({id:Number(targetId), ts:Date.now()}));
-    }, true);
-
     const badge = document.createElement("div");
     badge.dataset.targetId = String(targetId);
     badge.dataset.key = "bsptrue:" + targetId + ":" + Math.random().toString(36).slice(2);
+    badge.setAttribute("role", "button");
+    badge.setAttribute("tabindex", "0");
     updateBadge(badge, intel);
 
-    a.appendChild(badge);
-    div.appendChild(a);
+    div.appendChild(badge);
     return div;
   }
 
@@ -834,12 +838,40 @@
     pop.querySelector('.close').onclick = e => { e.stopPropagation(); pop.remove(); schedule(120); };
   }
 
-  document.addEventListener('click', e => {
+  function openBadgeIntelOnly(e){
     const b = e.target.closest?.('.absp321-badge');
     if(!b) return;
+
     e.preventDefault();
     e.stopPropagation();
+    if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+
     popup(b);
+    return false;
+  }
+
+  document.addEventListener('click', openBadgeIntelOnly, true);
+  document.addEventListener('mousedown', e => {
+    if(e.target.closest?.('.absp321-badge')){
+      e.preventDefault();
+      e.stopPropagation();
+      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+    }
+  }, true);
+  document.addEventListener('touchstart', e => {
+    if(e.target.closest?.('.absp321-badge')){
+      e.stopPropagation();
+      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+    }
+  }, {capture:true, passive:false});
+  document.addEventListener('keydown', e => {
+    const b = e.target.closest?.('.absp321-badge');
+    if(!b) return;
+    if(e.key === 'Enter' || e.key === ' '){
+      e.preventDefault();
+      e.stopPropagation();
+      popup(b);
+    }
   }, true);
 
   document.addEventListener('click', e => {
@@ -854,20 +886,29 @@
   }, true);
 
   function initUI(){
-    if(document.getElementById('absp321-main')) return;
+    if(!document.getElementById('absp321-main')){
+      const btn = document.createElement('button');
+      btn.id = 'absp321-main';
+      btn.type = 'button';
+      btn.textContent = '🧠';
+      btn.title = 'Advanced Battle Stat Predictor';
+      btn.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        state.panelOpen = !state.panelOpen;
+        renderPanel();
+      };
+      document.body.appendChild(btn);
+    }
 
-    const btn = document.createElement('button');
-    btn.id = 'absp321-main';
-    btn.textContent = '🧠';
-    btn.onclick = () => { state.panelOpen = !state.panelOpen; renderPanel(); };
-    document.body.appendChild(btn);
+    if(!document.getElementById('absp321-panel')){
+      const panel = document.createElement('div');
+      panel.id = 'absp321-panel';
+      document.body.appendChild(panel);
+    }
 
-    const panel = document.createElement('div');
-    panel.id = 'absp321-panel';
-    document.body.appendChild(panel);
-
-    makeDraggable(btn);
     renderPanel();
+    updateIcon();
   }
 
   function ownProfile(){
@@ -877,9 +918,48 @@
     return !!(state.user?.name && String(document.title || '').toLowerCase().includes(String(state.user.name).toLowerCase()));
   }
 
+  function mountMainIconOnProfile(){
+    const btn = document.getElementById('absp321-main');
+    if(!btn) return;
+
+    if(!ownProfile()){
+      btn.classList.remove('absp321-main-visible');
+      if(btn.parentElement && btn.parentElement.classList.contains('absp321-main-wrap')){
+        document.body.appendChild(btn);
+      }
+      return;
+    }
+
+    let target = document.querySelector('.buttons-wrap');
+    if(!target) target = document.querySelector('.profile-wrapper .actions, .actions, [class*="buttons-wrap"]');
+
+    if(!target){
+      btn.classList.add('absp321-main-visible');
+      btn.style.position = 'fixed';
+      btn.style.left = '16px';
+      btn.style.bottom = '116px';
+      document.body.appendChild(btn);
+      return;
+    }
+
+    let wrap = document.getElementById('absp321-main-wrap');
+    if(!wrap){
+      wrap = document.createElement('span');
+      wrap.id = 'absp321-main-wrap';
+      wrap.className = 'absp321-main-wrap';
+    }
+
+    if(wrap.parentElement !== target) target.appendChild(wrap);
+    if(btn.parentElement !== wrap) wrap.appendChild(btn);
+
+    btn.style.position = 'relative';
+    btn.style.left = '';
+    btn.style.bottom = '';
+    btn.classList.add('absp321-main-visible');
+  }
+
   function updateIcon(){
-    const b = document.getElementById('absp321-main');
-    if(b) b.style.display = ownProfile() ? 'block' : 'none';
+    mountMainIconOnProfile();
   }
 
   function renderPanel(){
