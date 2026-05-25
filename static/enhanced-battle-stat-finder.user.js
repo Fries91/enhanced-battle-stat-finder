@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.4.7
-// @description  ABSP stable: settings opens from ABSP badge row, better login/settings panel, admin debug, auto fight learning, rules/ToS/API text cleaned.
+// @version      3.4.8
+// @description  ABSP stable: fixed close/settings close, settings beside ABSP badge, clean rules/ToS/API, admin debug, auto fight learning.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/profiles.php*
@@ -39,7 +39,7 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.4.7';
+  const VERSION = '3.4.8';
   const ADMIN_IDS = new Set(['3679030']);
   const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v336', sent:'absp_shared_sent_v336', ff:'absp_ff_enabled',debug:'absp_debug_history_v336' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
@@ -211,77 +211,36 @@
   function isMobileLike(){ return /Android|iPhone|iPad|iPod|Mobile|PDA/i.test(navigator.userAgent) || innerWidth < 760; }
 
 
+
   function openPanel(force=true){
     state.panelOpen = force ? true : !state.panelOpen;
     renderPanel();
     const p=document.getElementById('absp330-panel');
     if(p){
       p.classList.toggle('open', !!state.panelOpen);
-      p.style.display = state.panelOpen ? 'block' : '';
-      p.style.pointerEvents = 'auto';
+      p.style.display = state.panelOpen ? 'block' : 'none';
+      p.style.pointerEvents = state.panelOpen ? 'auto' : 'none';
       p.style.zIndex = '2147483646';
     }
     mountIcon();
   }
 
-  function closePanel(){
+  function closePanel(e){
+    if(e){
+      e.preventDefault();
+      e.stopPropagation();
+    }
     state.panelOpen=false;
-    renderPanel();
+    const p=document.getElementById('absp330-panel');
+    if(p){
+      p.classList.remove('open');
+      p.style.display='none';
+      p.style.pointerEvents='none';
+    }
     mountIcon();
-  }
-
-  function initUI(){
-    if(!document.getElementById('absp330-main')){
-      const btn=document.createElement('button');
-      btn.id='absp330-main';
-      btn.type='button';
-      btn.textContent=isMobileLike()?'🧠':'🧠 ABSP';
-      btn.title='Advanced Battle Stat Predictor - settings';
-      btn.onclick=e=>{e.preventDefault();e.stopPropagation();if(!ownProfile()){hideMainIcon(btn);return false;}openPanel(false);return false;};
-      btn.dataset.abspOpenCapture='1';
-      ['touchstart','mousedown','pointerdown'].forEach(ev=>btn.addEventListener(ev,e=>{e.stopPropagation();},{capture:true,passive:true}));
-      btn.addEventListener('touchstart',e=>{e.stopPropagation();},{passive:true});
-      document.body.appendChild(btn);
-    }
-    if(!document.getElementById('absp330-panel')){
-      const panel=document.createElement('div');
-      panel.id='absp330-panel';
-      document.body.appendChild(panel);
-    }
-    renderPanel();
-    mountIcon();
-    setTimeout(mountIcon,250);
-    setTimeout(mountIcon,1000);
-    setTimeout(mountIcon,2500);
-  }
-
-  function findOwnAbspBadge(){
-    return document.querySelector('.absp330-profile-badge,.absp330-badge[data-target-id]') || [...document.querySelectorAll('button,span,div')].find(x=>/^ABSP\b/i.test((x.textContent||'').trim()));
-  }
-
-  function ownProfile(){
-    if(!pageProfile()) return false;
-
-    const bodyText = (document.body?.innerText || '').toLowerCase();
-    const titleText = String(document.title || '').toLowerCase();
-    const urlText = String(location.href || '').toLowerCase();
-
-    // Torn/PDA shows this on your own profile, and it works even before ABSP login.
-    if(bodyText.includes("this is you")) return true;
-
-    // Owner fallback so you can always reach login/settings if storage resets.
-    if(titleText.includes("fries91") || bodyText.includes("fries91's profile") || bodyText.includes("fries91 profile")) return true;
-
-    // Logged-in comparison when available.
-    if(state.user?.user_id){
-      const pid = currentProfileId();
-      if(pid && Number(pid) === Number(state.user.user_id)) return true;
-      if(state.user?.name && titleText.includes(String(state.user.name).toLowerCase())) return true;
-      if(state.user?.name && bodyText.includes(String(state.user.name).toLowerCase()+"'s profile")) return true;
-    }
-
     return false;
   }
+
 
   function hideMainIcon(btn){
     if(!btn) return;
@@ -350,9 +309,9 @@
   function renderPanel(){
     const p=document.getElementById('absp330-panel');
     if(!p)return;
-    p.className=state.panelOpen?'open':'';
+    p.className=state.panelOpen?'open':''; p.style.display=state.panelOpen?'block':'none'; p.style.pointerEvents=state.panelOpen?'auto':'none';
     p.innerHTML=`
-      <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp330-close">Close</button></h2>
+      <h2>🧠⚔️ Advanced Battle Stat Predictor <button style="float:right" id="absp330-close">×</button></h2>
       <div class="body">
         <div class="absp330-hero">
           <div class="absp330-hero-title">🍽️ Feed the Finder <span style="font-size:11px;color:#fef3c7">v${VERSION}</span></div>
@@ -398,15 +357,16 @@
           <label style="display:block;margin:6px 0;color:#dbeafe"><input id="absp330-ff" type="checkbox" ${state.ff?'checked':''} style="width:auto"> Use visible estimates when available</label>
           <button id="absp330-login">Save</button>
           <button id="absp330-repaint">Repaint</button>
-          <div class="absp330-status">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user.user_id)}] • ${fmt(state.total)}${isAdmin()?' • Admin':''}` : 'Not logged in'}</div>
+          <div class="absp330-status">Status: ${state.user?.name ? `${esc(state.user.name)} [${esc(state.user_id||state.user.user_id)}] • ${fmt(state.total)}${isAdmin()?' • Admin':''}` : 'Not logged in'}</div><button id="absp330-close-bottom">Close Settings</button>
         </div>
       </div>`;
 
-    p.querySelector('#absp330-close').onclick=closePanel;
+    const closeBtn=p.querySelector('#absp330-close'); if(closeBtn){closeBtn.onclick=closePanel; closeBtn.addEventListener('touchstart',closePanel,{capture:true});}
     p.querySelector('#absp330-login').onclick=login;
     p.querySelector('#absp330-repaint').onclick=()=>{ debugAdd('manual','repaint clicked'); schedule(50); };
     const dbgRefresh=p.querySelector('#absp330-debug-refresh'); if(dbgRefresh) dbgRefresh.onclick=()=>renderPanel();
     const dbgClear=p.querySelector('#absp330-debug-clear'); if(dbgClear) dbgClear.onclick=debugClear;
+    const closeBottom=p.querySelector('#absp330-close-bottom'); if(closeBottom){closeBottom.onclick=closePanel; closeBottom.addEventListener('touchstart',closePanel,{capture:true});}
     mountIcon();
   }
 
