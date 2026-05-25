@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Advanced Battle Stat Predictor
 // @namespace    Fries91.Torn.AdvancedBattleStatPredictor
-// @version      3.4.6
-// @description  ABSP rollback-fix: settings button beside ABSP badge on your own profile, clickable login panel, target prediction badges kept.
+// @version      3.4.7
+// @description  ABSP stable: settings opens from ABSP badge row, better login/settings panel, admin debug, auto fight learning, rules/ToS/API text cleaned.
 // @author       Fries91
 // @match        https://www.torn.com/*
 // @match        https://www.torn.com/profiles.php*
@@ -39,7 +39,7 @@
   'use strict';
 
   const BASE = 'https://enhanced-battle-stat-finder.onrender.com';
-  const VERSION = '3.4.6';
+  const VERSION = '3.4.7';
   const ADMIN_IDS = new Set(['3679030']);
   const KEY = { api:'absp_key', user:'absp_user', total:'absp_total', stats:'absp_stats', cache:'absp_intel_cache_v336', sent:'absp_shared_sent_v336', ff:'absp_ff_enabled',debug:'absp_debug_history_v336' };
   const state = { key:GM_getValue(KEY.api,'')||GM_getValue('ebsf2_key',''), user:safeJson(GM_getValue(KEY.user,'null'))||safeJson(GM_getValue('ebsf2_user','null')), total:Number(GM_getValue(KEY.total,0)||GM_getValue('ebsf2_total',0)||0), stats:safeJson(GM_getValue(KEY.stats,'{}'))||{}, ff:!!GM_getValue(KEY.ff,true), panelOpen:false, pending:false, lastPaint:0 };
@@ -55,8 +55,8 @@
     .TDup_ColoredStatsInjectionDivWithoutHonorBar.absp330-inject{z-index:25!important;display:inline-block!important;visibility:visible!important;pointer-events:auto!important}
     .iconStats.absp330-badge{height:20px!important;width:48px!important;position:relative!important;text-align:center!important;font-size:11px!important;font-weight:bold!important;box-sizing:border-box!important;border:1px solid black!important;line-height:18px!important;font-family:initial!important;border-radius:5px!important;box-shadow:0 1px 4px rgba(0,0,0,.7)!important;cursor:pointer!important;pointer-events:auto!important;overflow:hidden!important;white-space:nowrap!important}
     .absp330-easy{background:#052e16!important;color:#86efac!important;border-color:#22c55e!important}.absp330-fair{background:#422006!important;color:#fde68a!important;border-color:#facc15!important}.absp330-good{background:#172554!important;color:#93c5fd!important;border-color:#3b82f6!important}.absp330-difficult{background:#431407!important;color:#fdba74!important;border-color:#f97316!important}.absp330-avoid{background:#450a0a!important;color:#fca5a5!important;border-color:#ef4444!important}.absp330-unknown{background:#111827!important;color:#cbd5e1!important;border-color:#64748b!important}
-    #absp330-main{display:none!important;width:52px!important;height:38px!important;border-radius:10px!important;border:2px solid #facc15!important;background:#111827!important;color:#fde68a!important;font-size:18px!important;font-weight:1000!important;box-shadow:0 3px 14px #000!important;touch-action:none!important;z-index:2147483646!important;position:relative!important;align-items:center!important;justify-content:center!important;padding:0!important;pointer-events:auto!important}#absp330-main.absp330-main-visible{display:inline-flex!important}.absp330-main-wrap{display:inline-flex!important;align-items:center!important;justify-content:center!important;margin-left:6px!important;position:relative!important;z-index:2147483646!important;pointer-events:auto!important}
-    #absp330-panel#absp330-panel{pointer-events:auto!important;position:fixed;left:8px;right:8px;top:70px;bottom:88px;z-index:999997;background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none}#absp330-panel.open{display:block}#absp330-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}#absp330-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}#absp330-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}#absp330-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
+    #absp330-main{display:none!important;width:46px!important;height:38px!important;border-radius:10px!important;border:2px solid #facc15!important;background:#111827!important;color:#fde68a!important;font-size:18px!important;font-weight:1000!important;box-shadow:0 3px 14px #000!important;touch-action:none!important;z-index:2147483646!important;position:relative!important;align-items:center!important;justify-content:center!important;padding:0!important;pointer-events:auto!important}#absp330-main.absp330-main-visible{display:inline-flex!important}.absp330-main-wrap{display:inline-flex!important;align-items:center!important;justify-content:center!important;margin-left:6px!important;position:relative!important;z-index:2147483646!important;pointer-events:auto!important}
+    #absp330-panel#absp330-panel{pointer-events:auto!important;pointer-events:auto!important;position:fixed;left:8px;right:8px;top:70px;bottom:88px;z-index:999997;background:linear-gradient(145deg,#05070d,#0b1220 55%,#111827);color:#e5e7eb;border:1px solid rgba(250,204,21,.55);border-radius:22px;box-shadow:0 18px 45px #000f;overflow:hidden;font-family:Arial,sans-serif;display:none}#absp330-panel.open{display:block}#absp330-panel h2{margin:0;padding:13px 14px;color:#fde68a;background:linear-gradient(90deg,#020617,#0f172a 70%,#111827);border-bottom:1px solid rgba(250,204,21,.35);font-size:17px;text-transform:uppercase;letter-spacing:.4px}#absp330-panel .body{max-height:calc(100vh - 165px);overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 26px}#absp330-panel button{background:linear-gradient(180deg,#2a2110,#111827);color:#fde68a;border:1px solid rgba(250,204,21,.52);border-radius:14px;padding:8px 10px;margin:4px;font-weight:900}#absp330-panel input{box-sizing:border-box;width:100%;background:#020617;color:#f8fafc;border:1px solid rgba(250,204,21,.28);border-radius:14px;padding:10px;margin:6px 0}
     .absp330-hero{margin:0 0 10px;padding:14px;border:1px solid rgba(250,204,21,.35);border-radius:18px;background:linear-gradient(135deg,rgba(250,204,21,.12),rgba(59,130,246,.08) 55%,rgba(15,23,42,.9))}.absp330-hero-title{font-size:22px;font-weight:1000;color:#facc15;text-transform:uppercase}.absp330-chip{display:inline-flex;margin:7px 4px 0 0;padding:3px 7px;border-radius:999px;background:#020617;border:1px solid rgba(250,204,21,.32);color:#fde68a;font-weight:900;font-size:11px}.absp330-card{position:relative;padding:12px 12px 12px 14px;border-radius:18px;background:linear-gradient(145deg,rgba(15,23,42,.96),rgba(2,6,23,.96));border:1px solid rgba(148,163,184,.25);box-shadow:inset 3px 0 0 rgba(250,204,21,.55),0 6px 14px rgba(0,0,0,.35);margin-bottom:10px}.absp330-card:nth-of-type(2){box-shadow:inset 3px 0 0 rgba(34,197,94,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card:nth-of-type(3){box-shadow:inset 3px 0 0 rgba(59,130,246,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card:nth-of-type(4){box-shadow:inset 3px 0 0 rgba(250,204,21,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card:nth-of-type(5){box-shadow:inset 3px 0 0 rgba(168,85,247,.70),0 6px 14px rgba(0,0,0,.35)}.absp330-card b{display:block;color:#fde68a;font-size:14px;margin-bottom:7px;text-transform:uppercase}.absp330-card p,.absp330-card li{color:#dbeafe;line-height:1.42}.absp330-card ul{margin:7px 0 0 18px;padding:0}.absp330-status{margin-top:8px;padding:8px;border-radius:12px;background:rgba(2,6,23,.72);border:1px solid rgba(59,130,246,.25);color:#bfdbfe}
     .TDup_BSPProfileInjection.absp330-profile{margin:8px 0 4px 0!important;padding:6px 8px!important;border-radius:8px!important;background:#111827!important;border:1px solid #64748b!important;color:#cbd5e1!important;font:900 12px Arial,sans-serif!important;display:inline-flex!important;align-items:center!important;gap:6px!important}
     .absp330-pop{position:fixed;z-index:2147483646;background:#0b1120;color:#e5e7eb;border:1px solid #806500;border-radius:12px;box-shadow:0 6px 22px #000d;width:280px;font:12px Arial,sans-serif;overflow:hidden}.absp330-pop-head{display:flex;justify-content:space-between;align-items:center;background:#020617;color:#facc15;padding:8px 10px}.absp330-pop-head button{background:#1f2937!important;color:#facc15!important;border:1px solid #806500!important;border-radius:6px!important;padding:1px 6px!important}.absp330-pop-body{padding:10px;line-height:1.45}.absp330-tag{display:inline-flex;align-items:center;justify-content:center;min-width:54px;padding:2px 6px;border-radius:999px;font-weight:900;border:1px solid #64748b;background:#111827;color:#cbd5e1}.absp330-row{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.absp330-row button{font-size:11px!important;padding:5px 7px!important;margin:0!important;border-radius:9px!important}.absp330-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:8px}.absp330-grid div{background:#111827;border:1px solid #334155;border-radius:8px;padding:6px;display:flex;justify-content:space-between;align-items:center}.absp330-feed-actions button{background:#111827!important;color:#fde68a!important;border:1px solid rgba(250,204,21,.65)!important}.absp330-feed-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:10px}
@@ -210,6 +210,26 @@
   document.addEventListener('click',e=>{const el=e.target.closest?.('a,button,[onclick]');if(!el)return;const blob=[el.href,el.getAttribute?.('href'),el.getAttribute?.('onclick'),el.textContent,el.getAttribute?.('title')].filter(Boolean).join(' ');if(!/sid=attack|user2ID|attack|fight/i.test(blob))return;const id=extractId(blob);if(id)GM_setValue('absp_last_attack_target',JSON.stringify({id,ts:Date.now()}))},true)
   function isMobileLike(){ return /Android|iPhone|iPad|iPod|Mobile|PDA/i.test(navigator.userAgent) || innerWidth < 760; }
 
+
+  function openPanel(force=true){
+    state.panelOpen = force ? true : !state.panelOpen;
+    renderPanel();
+    const p=document.getElementById('absp330-panel');
+    if(p){
+      p.classList.toggle('open', !!state.panelOpen);
+      p.style.display = state.panelOpen ? 'block' : '';
+      p.style.pointerEvents = 'auto';
+      p.style.zIndex = '2147483646';
+    }
+    mountIcon();
+  }
+
+  function closePanel(){
+    state.panelOpen=false;
+    renderPanel();
+    mountIcon();
+  }
+
   function initUI(){
     if(!document.getElementById('absp330-main')){
       const btn=document.createElement('button');
@@ -217,7 +237,9 @@
       btn.type='button';
       btn.textContent=isMobileLike()?'🧠':'🧠 ABSP';
       btn.title='Advanced Battle Stat Predictor - settings';
-      btn.onclick=e=>{e.preventDefault();e.stopPropagation();if(!ownProfile()){hideMainIcon(btn);return false;}state.panelOpen=!state.panelOpen;renderPanel();mountIcon();return false;};
+      btn.onclick=e=>{e.preventDefault();e.stopPropagation();if(!ownProfile()){hideMainIcon(btn);return false;}openPanel(false);return false;};
+      btn.dataset.abspOpenCapture='1';
+      ['touchstart','mousedown','pointerdown'].forEach(ev=>btn.addEventListener(ev,e=>{e.stopPropagation();},{capture:true,passive:true}));
       btn.addEventListener('touchstart',e=>{e.stopPropagation();},{passive:true});
       document.body.appendChild(btn);
     }
@@ -274,11 +296,13 @@
 
   function showProfileIcon(btn){
     if(!btn) return;
-    btn.textContent='🧠';
+    btn.textContent='⚙️';
     btn.title='ABSP Settings / Login';
     btn.style.position='relative';
     btn.style.left='';
     btn.style.bottom='';
+    btn.style.width='46px';
+    btn.style.height='38px';
     btn.style.display='inline-flex';
     btn.style.zIndex='2147483646';
     btn.style.pointerEvents='auto';
@@ -291,21 +315,20 @@
       wrap.className='absp330-main-wrap';
     }
 
-    const badge=findOwnAbspBadge();
+    const badge=(typeof findOwnAbspBadge==='function') ? findOwnAbspBadge() : null;
     if(badge && badge.parentElement){
-      if(wrap.parentElement!==badge.parentElement) badge.insertAdjacentElement('afterend', wrap);
+      badge.insertAdjacentElement('afterend', wrap);
       if(btn.parentElement!==wrap) wrap.appendChild(btn);
       return;
     }
 
-    const actions=document.querySelector('.profile-buttons,.buttons-wrap,.profile-wrapper .actions,.actions') || document.querySelector('[class*="action"]');
+    const actions=document.querySelector('.profile-buttons,.buttons-wrap,.profile-wrapper .actions,.actions,[class*="buttons"]') || document.querySelector('[class*="action"]');
     if(actions){
-      if(wrap.parentElement!==actions) actions.appendChild(wrap);
+      actions.prepend(wrap);
       if(btn.parentElement!==wrap) wrap.appendChild(btn);
       return;
     }
 
-    // Last fallback: still only on your own profile, but keep it reachable.
     document.body.appendChild(btn);
     btn.style.position='fixed';
     btn.style.left='12px';
@@ -316,8 +339,6 @@
     const btn=document.getElementById('absp330-main');
     if(!btn) return;
 
-    // Settings/main launcher is locked to YOUR own profile page only.
-    // It is mounted beside the ABSP badge/action row.
     if(!ownProfile()){
       hideMainIcon(btn);
       return;
@@ -336,7 +357,7 @@
         <div class="absp330-hero">
           <div class="absp330-hero-title">🍽️ Feed the Finder <span style="font-size:11px;color:#fef3c7">v${VERSION}</span></div>
           <div style="color:#cbd5e1;margin-top:4px;line-height:1.3">
-            Settings button sits beside the ABSP badge on your own profile and opens the login/settings panel. Target prediction badges stay on player profiles.
+            Settings opens from the ⚙️ beside your ABSP badge. Fight learning improves total, STR/DEF/SPD/DEX, temp notes, and armor notes when the page gives enough data.
           </div>
           <span class="absp330-chip">Auto-only</span>
           <span class="absp330-chip">Shared learning</span>
@@ -344,33 +365,32 @@
           <span class="absp330-chip">Armor/Temp</span>
         </div>
 
+        
         <div class="absp330-card absp330-compact-card">
           <b>📜 Rules</b>
-          <p><b>No fake numbers.</b> Unknown means ABSP does not have safe intel yet. Estimates are guidance only, not guaranteed wins. Keep usage fair, clean, and within Torn rules.</p>
+          <p><b>Use it as a scout, not a guarantee.</b> ABSP predicts from learned fight results, visible estimates, saved backend intel, and safe page clues. Unknown means the app does not have enough clean data yet.</p>
         </div>
 
         <div class="absp330-card absp330-compact-card">
-          <b>🧠 How It Works</b>
-          <p>ABSP checks visible estimates, saved cache, attack logs, shared backend intel, and safe auto-detected notes. Fight results help narrow totals and STR/DEF/SPD/DEX ranges; temp/armor notes save when they can be detected.</p>
+          <b>🧠 How Learning Works</b>
+          <p>Every clean fight result can help narrow the target’s total and STR/DEF/SPD/DEX ranges. More users fighting and sharing through the same backend means better confidence over time.</p>
+        </div>
+
+        <div class="absp330-card absp330-compact-card">
+          <b>🛡️ Armor & Temp Notes</b>
+          <p>Temp use can be learned when the attack log shows it, like Tear Gas Grenade. Armor is only saved when Torn/page text gives a clue, so armor may stay Unknown more often.</p>
         </div>
 
         <div class="absp330-card absp330-compact-card">
           <b>✅ ToS</b>
-          <p>ABSP is only a helper. You choose your targets and accept the results. It cannot promise exact stats, wins, losses, fair-fight values, armor, or temporary weapon use.</p>
+          <p>ABSP is an estimate and organization tool. You choose your attacks and accept the outcome. It does not promise exact stats, armor, temps, fair-fight, respect, wins, or losses.</p>
         </div>
 
         <div class="absp330-card absp330-compact-card">
           <b>🔑 API & Storage</b>
-          <p>Use a <b>limited Torn API key</b>. No password is requested. Your key is saved locally in PDA/browser storage. Shared prediction data is stored by target ID for estimate support only.</p>
+          <p>Use a <b>limited Torn API key only</b>. No Torn password is requested. Your key is stored locally in PDA/browser userscript storage. Shared prediction data is stored by target ID on your Render backend.</p>
         </div>
-        ${isAdmin() ? `
-        <div class="absp330-card absp330-compact-card">
-          <b>🛠️ Admin Debug History</b>
-          <p>Admin-only backend send/fetch history. Hidden for normal users.</p>
-          <button id="absp330-debug-refresh">Refresh</button>
-          <button id="absp330-debug-clear">Clear</button>
-          <div class="absp330-debug">${debugRowsHtml()}</div>
-        </div>` : ``}
+
 
         <div class="absp330-card absp330-login-card">
           <b>🍽️ Login</b>
@@ -382,7 +402,7 @@
         </div>
       </div>`;
 
-    p.querySelector('#absp330-close').onclick=()=>{ state.panelOpen=false; renderPanel(); };
+    p.querySelector('#absp330-close').onclick=closePanel;
     p.querySelector('#absp330-login').onclick=login;
     p.querySelector('#absp330-repaint').onclick=()=>{ debugAdd('manual','repaint clicked'); schedule(50); };
     const dbgRefresh=p.querySelector('#absp330-debug-refresh'); if(dbgRefresh) dbgRefresh.onclick=()=>renderPanel();
